@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"slices"
 	"strings"
 	"syscall"
@@ -439,6 +440,7 @@ type worker struct {
 	fileDownload    time.Duration
 	lastURL         string // This is reset somewhat lazily.
 	stdout, stderr  bytes.Buffer
+	platformProps   map[string]string
 
 	// For limiting parallelism during download / write actions
 	limiter, iolimiter chan struct{}
@@ -478,6 +480,7 @@ func (w *worker) RunTask(ctx context.Context) (*pb.ExecuteResponse, error) {
 	}
 	w.currentMsg = nil
 	w.actionDigest = nil
+	w.platformProps = nil
 	return response, err
 }
 
@@ -518,6 +521,7 @@ func (w *worker) runTask(msg *pubsub.Message) *pb.ExecuteResponse {
 			Status: status(err, codes.FailedPrecondition, "Badly serialised request: %s", err),
 		}
 	}
+	w.platformProps = copyPlatformProperties(msg.Metadata)
 	return w.runTaskRequest(req)
 }
 
@@ -535,6 +539,7 @@ func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
 	logr.WithFields(logrus.Fields{
 		"hash": w.actionDigest.Hash,
 	}).Debug("Received task for action digest")
+	w.logPlatformProperties()
 	w.lastURL = w.actionURL()
 
 	action, command, status := w.fetchRequestBlobs(req)
@@ -561,6 +566,43 @@ func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
 		}
 	}
 	return w.execute(req, action, command)
+}
+
+func copyPlatformProperties(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	ret := make(map[string]string, len(metadata))
+	for k, v := range metadata {
+		ret[k] = v
+	}
+	return ret
+}
+
+func formatPlatformProperties(props map[string]string) string {
+	if len(props) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(props))
+	for key := range props {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	formatted := make([]string, 0, len(keys))
+	for _, key := range keys {
+		formatted = append(formatted, key+"="+props[key])
+	}
+	return strings.Join(formatted, ", ")
+}
+
+func (w *worker) logPlatformProperties() {
+	if len(w.platformProps) == 0 {
+		return
+	}
+	logr.WithFields(logrus.Fields{
+		"hash":               w.actionDigest.Hash,
+		"platformProperties": formatPlatformProperties(w.platformProps),
+	}).Info("Action specifies platform properties; would use them to select sandbox filesystem")
 }
 
 // forceShutdown sends any shutdown reports and calls log.Fatal() to shut down the worker
