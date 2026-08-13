@@ -126,12 +126,13 @@ func init() {
 
 // PubSubOpts holds information to configure queue options in the api server
 type PubSubOpts struct {
-	RequestQueue          string `short:"q" long:"request_queue" env:"API_REQUEST_QUEUE" required:"true" description:"URL defining the pub/sub queue to connect to for sending requests, e.g. gcppubsub://my-request-queue"`
-	ResponseQueue         string `short:"r" long:"response_queue" env:"API_RESPONSE_QUEUE" required:"true" description:"URL defining the pub/sub queue to connect to for sending responses, e.g. gcppubsub://my-response-queue"`
-	ResponseQueueSuffix   string `long:"response_queue_suffix" env:"API_RESPONSE_QUEUE_SUFFIX" description:"Suffix to apply to the response queue name"`
-	PreResponseQueue      string `long:"pre_response_queue" env:"API_PRE_RESPONSE_QUEUE" required:"true" description:"URL describing the pub/sub queue to connect to for preloading responses to other servers"`
-	NumPollers            int    `long:"num_pollers" env:"API_NUM_POLLERS" default:"10"`
-	SubscriptionBatchSize uint   `long:"subscription_batch_size" env:"API_SUBSCRIPTION" default:"100"`
+	RequestQueue          string   `short:"q" long:"request_queue" env:"API_REQUEST_QUEUE" description:"URL defining the default ('standard') pub/sub queue to connect to for sending requests, e.g. gcppubsub://my-request-queue. Either this or a standard=<url> entry in request_queues is required"`
+	RequestQueues         []string `long:"request_queues" env:"API_REQUEST_QUEUES" description:"List of name=url pairs defining additional pub/sub queues to connect to for sending requests, selected by the worker-type platform property, e.g. heavy=gcppubsub://my-heavy-request-queue"`
+	ResponseQueue         string   `short:"r" long:"response_queue" env:"API_RESPONSE_QUEUE" required:"true" description:"URL defining the pub/sub queue to connect to for sending responses, e.g. gcppubsub://my-response-queue"`
+	ResponseQueueSuffix   string   `long:"response_queue_suffix" env:"API_RESPONSE_QUEUE_SUFFIX" description:"Suffix to apply to the response queue name"`
+	PreResponseQueue      string   `long:"pre_response_queue" env:"API_PRE_RESPONSE_QUEUE" required:"true" description:"URL describing the pub/sub queue to connect to for preloading responses to other servers"`
+	NumPollers            int      `long:"num_pollers" env:"API_NUM_POLLERS" default:"10"`
+	SubscriptionBatchSize uint     `long:"subscription_batch_size" env:"API_SUBSCRIPTION" default:"100"`
 }
 
 // ServeForever serves on the given port until terminated.
@@ -143,9 +144,45 @@ func ServeForever(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL 
 	grpcutil.ServeForever(lis, s)
 }
 
+// defaultRequestQueue is the name of the queue used for actions that don't request a specific worker type.
+const defaultRequestQueue = "standard"
+
+// parseRequestQueues builds a map of queue name to queue URL from the request queue options.
+// requestQueue is the default queue and is registered as "standard"; requestQueues are name=url pairs.
+// The result is guaranteed to contain a "standard" queue, since all unrouted actions fall back to it.
+func parseRequestQueues(requestQueue string, requestQueues []string) (map[string]string, error) {
+	urls := map[string]string{}
+	if requestQueue != "" {
+		urls[defaultRequestQueue] = requestQueue
+	}
+	for _, q := range requestQueues {
+		name, url, ok := strings.Cut(q, "=")
+		if !ok || name == "" || url == "" {
+			return nil, fmt.Errorf("invalid request queue format: %q (must be name=url)", q)
+		}
+		if _, present := urls[name]; present {
+			return nil, fmt.Errorf("request queue %q is configured more than once", name)
+		}
+		urls[name] = url
+	}
+	if _, present := urls[defaultRequestQueue]; !present {
+		return nil, fmt.Errorf("a %q request queue must be provided, either via API_REQUEST_QUEUE or as %s=<url> in API_REQUEST_QUEUES", defaultRequestQueue, defaultRequestQueue)
+	}
+	return urls, nil
+}
+
 func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string, connTLS bool, allowedPlatform map[string][]string, storageURL string, storageTLS bool) (*grpc.Server, net.Listener, error) {
 	if name == "" {
 		name = "mettle API server"
+	}
+
+	// Validate the queue configuration up front so that misconfiguration fails fast, before we open any connections.
+	requestURLs, err := parseRequestQueues(queueOpts.RequestQueue, queueOpts.RequestQueues)
+	if err != nil {
+		return nil, nil, err
+	}
+	if queueOpts.NumPollers < 1 {
+		return nil, nil, fmt.Errorf("num_pollers must be greater than 1, got: %d", queueOpts.NumPollers)
 	}
 
 	log.Notice("Contacting CAS server on %s...", storageURL)
@@ -153,14 +190,17 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 	if err != nil {
 		return nil, nil, err
 	}
-	if queueOpts.NumPollers < 1 {
-		return nil, nil, fmt.Errorf("num_pollers must be greater than 1, got: %d", queueOpts.NumPollers)
+
+	requestsMap := make(map[string]*pubsub.Topic, len(requestURLs))
+	for queueName, url := range requestURLs {
+		requestsMap[queueName] = common.MustOpenTopic(url)
 	}
+
 	// The subscription url is made up of the response queue url and the response queue suffix
 	subscriptionURL := queueOpts.ResponseQueue + queueOpts.ResponseQueueSuffix
 	srv := &server{
 		name:             name,
-		requests:         common.MustOpenTopic(queueOpts.RequestQueue),
+		requests:         requestsMap,
 		responses:        common.MustOpenSubscription(subscriptionURL, queueOpts.SubscriptionBatchSize),
 		preResponses:     common.MustOpenTopic(queueOpts.PreResponseQueue),
 		jobs:             map[string]*job{},
@@ -210,7 +250,7 @@ type server struct {
 	bpb.UnimplementedBootstrapServer
 	name             string
 	client           *client.Client
-	requests         *pubsub.Topic
+	requests         map[string]*pubsub.Topic
 	responses        *pubsub.Subscription
 	preResponses     *pubsub.Topic
 	jobs             map[string]*job
@@ -353,7 +393,21 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 	b, _ = proto.Marshal(req)
 	ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := s.requests.Send(ctx, &pubsub.Message{
+
+	workerType, err := s.getWorkerType(req)
+	var topic *pubsub.Topic
+	if err != nil {
+		log.Warningf("Failed to read action for worker-type routing, falling back to standard: %s", err)
+		topic = s.requests[defaultRequestQueue]
+	} else if t, ok := s.requests[workerType]; ok {
+		log.Infof("Routing action %s to worker-type queue: %s", req.ActionDigest.Hash, workerType)
+		topic = t
+	} else {
+		log.Infof("Routing action %s to standard queue (worker-type %q is not configured)", req.ActionDigest.Hash, workerType)
+		topic = s.requests[defaultRequestQueue]
+	}
+
+	if err := topic.Send(ctx, &pubsub.Message{
 		Body:     b,
 		Metadata: platform,
 	}); err != nil {
@@ -362,6 +416,22 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 		return err
 	}
 	return s.streamEvents(req.ActionDigest, ch, stream)
+}
+
+func (s *server) getWorkerType(req *pb.ExecuteRequest) (string, error) {
+	action := &pb.Action{}
+	if _, err := s.client.ReadProto(context.Background(), digest.NewFromProtoUnvalidated(req.ActionDigest), action); err != nil {
+		return "", err
+	}
+	if action.Platform == nil {
+		return "", nil
+	}
+	for _, prop := range action.Platform.Properties {
+		if prop.Name == "worker-type" {
+			return prop.Value, nil
+		}
+	}
+	return "", nil
 }
 
 // contextMetadata returns the RequestMetadata associated with a context

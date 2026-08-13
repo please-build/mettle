@@ -8,6 +8,10 @@ Version 11.18.0
     * Handle newer `output_symlinks` field as well as older, deprecated fields.
     * Populate `root_directory_digest` on output directories, so clients can use them without fetching the whole Tree.
 
+Version 11.18.0
+---------------
+    * Add dynamic multi-queue routing to Mettle API based on the 'worker-type' platform property
+
 Version 11.17.0
 ---------------
     * Upgrade Go toolchain, packages and Please plugin
