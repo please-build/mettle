@@ -36,7 +36,9 @@ func TestSetRootDirectoryDigests(t *testing.T) {
 	rootDigest, err := digest.NewFromMessage(tree.Root)
 	require.NoError(t, err)
 	assert.Equal(t, rootDigest.ToProto(), outDir.RootDirectoryDigest)
-	assert.NotEqual(t, digest.Digest{}, rexclient.PackDigest(tree.Root))
+	packDigest := rexclient.PackDigest(tree.Root)
+	assert.NotEqual(t, digest.Digest{}, packDigest)
+	assert.Contains(t, entries, packDigest, "pack should be uploaded")
 
 	// And we should be able to walk the whole directory from it via uploaded Directory blobs.
 	root := &pb.Directory{}
@@ -49,6 +51,7 @@ func TestSetRootDirectoryDigests(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(blob(t, entries, root.Directories[0].Digest), sub))
 	require.Len(t, sub.Files, 1)
 	assert.Equal(t, "b.txt", sub.Files[0].Name)
+	assert.Empty(t, sub.Directories)
 }
 
 func TestSetRootDirectoryDigestsMissingTree(t *testing.T) {
@@ -79,8 +82,9 @@ func TestAllOutputSymlinks(t *testing.T) {
 	}))
 
 	// output_symlinks is already populated, which takes priority
-	assert.Equal(t, []*pb.OutputSymlink{dir, file}, allOutputSymlinks(&pb.ActionResult{
-		OutputSymlinks:          []*pb.OutputSymlink{dir, file},
+	link := &pb.OutputSymlink{Path: "link", Target: "target"}
+	assert.Equal(t, []*pb.OutputSymlink{link}, allOutputSymlinks(&pb.ActionResult{
+		OutputSymlinks:          []*pb.OutputSymlink{link},
 		OutputFileSymlinks:      []*pb.OutputSymlink{file},
 		OutputDirectorySymlinks: []*pb.OutputSymlink{dir},
 	}))
