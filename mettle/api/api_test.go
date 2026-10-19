@@ -413,7 +413,7 @@ func setupRoutingServer(t *testing.T, allowedPlatform map[string][]string) *rout
 	queueID++
 	queues := PubSubOpts{
 		RequestQueue:          stdQueue,
-		RequestQueues:         map[string]string{"heavy": heavyQueue},
+		ExtraRequestQueues:    map[string]string{"heavy": heavyQueue},
 		ResponseQueue:         responses,
 		PreResponseQueue:      responses,
 		NumPollers:            1,
@@ -536,11 +536,11 @@ func TestExecuteRoutingFallsBackToStandard(t *testing.T) {
 
 func TestMergeRequestQueues(t *testing.T) {
 	tests := []struct {
-		name          string
-		requestQueue  string
-		requestQueues map[string]string
-		expected      map[string]string
-		err           string
+		name               string
+		requestQueue       string
+		extraRequestQueues map[string]string
+		expected           map[string]string
+		err                string
 	}{
 		{
 			name:         "default queue only",
@@ -548,47 +548,47 @@ func TestMergeRequestQueues(t *testing.T) {
 			expected:     map[string]string{"standard": "mem://std"},
 		},
 		{
-			name:          "default queue and extra queues",
-			requestQueue:  "mem://std",
-			requestQueues: map[string]string{"heavy": "mem://heavy", "gpu": "mem://gpu"},
-			expected:      map[string]string{"standard": "mem://std", "heavy": "mem://heavy", "gpu": "mem://gpu"},
+			name:               "default queue and extra queues",
+			requestQueue:       "mem://std",
+			extraRequestQueues: map[string]string{"heavy": "mem://heavy", "gpu": "mem://gpu"},
+			expected:           map[string]string{"standard": "mem://std", "heavy": "mem://heavy", "gpu": "mem://gpu"},
 		},
 		{
-			name:          "standard queue provided via the map",
-			requestQueues: map[string]string{"standard": "mem://std", "heavy": "mem://heavy"},
-			expected:      map[string]string{"standard": "mem://std", "heavy": "mem://heavy"},
+			name:               "standard queue provided via the map",
+			extraRequestQueues: map[string]string{"standard": "mem://std", "heavy": "mem://heavy"},
+			expected:           map[string]string{"standard": "mem://std", "heavy": "mem://heavy"},
 		},
 		{
 			name: "nothing configured",
 			err:  "must be provided",
 		},
 		{
-			name:          "no standard queue",
-			requestQueues: map[string]string{"heavy": "mem://heavy"},
-			err:           "must be provided",
+			name:               "no standard queue",
+			extraRequestQueues: map[string]string{"heavy": "mem://heavy"},
+			err:                "must be provided",
 		},
 		{
-			name:          "empty name",
-			requestQueue:  "mem://std",
-			requestQueues: map[string]string{"": "mem://heavy"},
-			err:           "invalid request queue",
+			name:               "empty name",
+			requestQueue:       "mem://std",
+			extraRequestQueues: map[string]string{"": "mem://heavy"},
+			err:                "invalid request queue",
 		},
 		{
-			name:          "empty url",
-			requestQueue:  "mem://std",
-			requestQueues: map[string]string{"heavy": ""},
-			err:           "invalid request queue",
+			name:               "empty url",
+			requestQueue:       "mem://std",
+			extraRequestQueues: map[string]string{"heavy": ""},
+			err:                "invalid request queue",
 		},
 		{
-			name:          "standard queue configured twice",
-			requestQueue:  "mem://std",
-			requestQueues: map[string]string{"standard": "mem://other"},
-			err:           "configured twice",
+			name:               "standard queue configured twice",
+			requestQueue:       "mem://std",
+			extraRequestQueues: map[string]string{"standard": "mem://other"},
+			err:                "configured twice",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			urls, err := mergeRequestQueues(tc.requestQueue, tc.requestQueues)
+			urls, err := mergeRequestQueues(tc.requestQueue, tc.extraRequestQueues)
 			if tc.err != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.err)
@@ -600,20 +600,20 @@ func TestMergeRequestQueues(t *testing.T) {
 	}
 }
 
-// TestRequestQueuesFlagParsing checks that the queues can be given as name:url pairs, including urls containing colons.
-func TestRequestQueuesFlagParsing(t *testing.T) {
+// TestExtraRequestQueuesFlagParsing checks that the queues can be given as name:url pairs, including urls containing colons.
+func TestExtraRequestQueuesFlagParsing(t *testing.T) {
 	var opts PubSubOpts
 	_, err := flags.NewParser(&opts, flags.None).ParseArgs([]string{
 		"--response_queue=mem://responses",
 		"--pre_response_queue=mem://responses",
-		"--request_queues=heavy:gcppubsub://projects/p/topics/heavy",
-		"--request_queues=gpu:mem://gpu",
+		"--extra_request_queues=heavy:gcppubsub://projects/p/topics/heavy",
+		"--extra_request_queues=gpu:mem://gpu",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"heavy": "gcppubsub://projects/p/topics/heavy",
 		"gpu":   "mem://gpu",
-	}, opts.RequestQueues)
+	}, opts.ExtraRequestQueues)
 }
 
 func recv(stream pb.Execution_ExecuteClient) (*longrunning.Operation, *pb.ExecuteOperationMetadata) {

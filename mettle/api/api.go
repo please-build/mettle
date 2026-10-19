@@ -126,8 +126,8 @@ func init() {
 
 // PubSubOpts holds information to configure queue options in the api server
 type PubSubOpts struct {
-	RequestQueue          string            `short:"q" long:"request_queue" env:"API_REQUEST_QUEUE" description:"URL defining the default ('standard') pub/sub queue to connect to for sending requests, e.g. gcppubsub://my-request-queue. Either this or a standard:<url> entry in request_queues is required"`
-	RequestQueues         map[string]string `long:"request_queues" env:"API_REQUEST_QUEUES" env-delim:"," description:"Map of name:url pairs defining additional pub/sub queues to connect to for sending requests, selected by the worker-type platform property, e.g. heavy:gcppubsub://my-heavy-request-queue"`
+	RequestQueue          string            `short:"q" long:"request_queue" env:"API_REQUEST_QUEUE" description:"URL defining the default ('standard') pub/sub queue to connect to for sending requests, e.g. gcppubsub://my-request-queue. Either this or a standard:<url> entry in extra_request_queues is required"`
+	ExtraRequestQueues    map[string]string `long:"extra_request_queues" env:"API_EXTRA_REQUEST_QUEUES" env-delim:"," description:"Map of name:url pairs defining additional pub/sub queues to connect to for sending requests, selected by the worker-type platform property, e.g. heavy:gcppubsub://my-heavy-request-queue"`
 	ResponseQueue         string            `short:"r" long:"response_queue" env:"API_RESPONSE_QUEUE" required:"true" description:"URL defining the pub/sub queue to connect to for sending responses, e.g. gcppubsub://my-response-queue"`
 	ResponseQueueSuffix   string            `long:"response_queue_suffix" env:"API_RESPONSE_QUEUE_SUFFIX" description:"Suffix to apply to the response queue name"`
 	PreResponseQueue      string            `long:"pre_response_queue" env:"API_PRE_RESPONSE_QUEUE" required:"true" description:"URL describing the pub/sub queue to connect to for preloading responses to other servers"`
@@ -151,11 +151,11 @@ const defaultRequestQueue = "standard"
 const workerTypeProperty = "worker-type"
 
 // mergeRequestQueues builds a map of queue name to queue URL from the request queue options.
-// requestQueue is the default queue and is registered as "standard"; requestQueues maps additional names to URLs.
+// requestQueue is the default queue and is registered as "standard"; extraRequestQueues maps additional names to URLs.
 // The result is guaranteed to contain a "standard" queue, since all unrouted actions fall back to it.
-func mergeRequestQueues(requestQueue string, requestQueues map[string]string) (map[string]string, error) {
-	urls := make(map[string]string, len(requestQueues)+1)
-	for name, url := range requestQueues {
+func mergeRequestQueues(requestQueue string, extraRequestQueues map[string]string) (map[string]string, error) {
+	urls := make(map[string]string, len(extraRequestQueues)+1)
+	for name, url := range extraRequestQueues {
 		if name == "" || url == "" {
 			return nil, fmt.Errorf("invalid request queue %q: %q (name and url must both be set)", name, url)
 		}
@@ -163,12 +163,12 @@ func mergeRequestQueues(requestQueue string, requestQueues map[string]string) (m
 	}
 	if requestQueue != "" {
 		if _, present := urls[defaultRequestQueue]; present {
-			return nil, fmt.Errorf("request queue %q is configured twice, via both API_REQUEST_QUEUE and API_REQUEST_QUEUES", defaultRequestQueue)
+			return nil, fmt.Errorf("request queue %q is configured twice, via both API_REQUEST_QUEUE and API_EXTRA_REQUEST_QUEUES", defaultRequestQueue)
 		}
 		urls[defaultRequestQueue] = requestQueue
 	}
 	if _, present := urls[defaultRequestQueue]; !present {
-		return nil, fmt.Errorf("a %q request queue must be provided, either via API_REQUEST_QUEUE or as %s:<url> in API_REQUEST_QUEUES", defaultRequestQueue, defaultRequestQueue)
+		return nil, fmt.Errorf("a %q request queue must be provided, either via API_REQUEST_QUEUE or as %s:<url> in API_EXTRA_REQUEST_QUEUES", defaultRequestQueue, defaultRequestQueue)
 	}
 	return urls, nil
 }
@@ -179,7 +179,7 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 	}
 
 	// Validate the queue configuration up front so that misconfiguration fails fast, before we open any connections.
-	requestURLs, err := mergeRequestQueues(queueOpts.RequestQueue, queueOpts.RequestQueues)
+	requestURLs, err := mergeRequestQueues(queueOpts.RequestQueue, queueOpts.ExtraRequestQueues)
 	if err != nil {
 		return nil, nil, err
 	}
