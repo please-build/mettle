@@ -17,6 +17,7 @@ import (
 	"github.com/golang/protobuf/ptypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/thought-machine/go-flags"
 	bpb "github.com/thought-machine/please-servers/proto/mettle"
 	"gocloud.dev/pubsub"
 	bs "google.golang.org/genproto/googleapis/bytestream"
@@ -404,7 +405,7 @@ type routingFixture struct {
 	heavy  *executor
 }
 
-func setupRoutingServer(t *testing.T) *routingFixture {
+func setupRoutingServer(t *testing.T, allowedPlatform map[string][]string) *routingFixture {
 	casaddr := setupCASServer()
 	stdQueue := fmt.Sprintf("mem://requests-std-%d", queueID)
 	heavyQueue := fmt.Sprintf("mem://requests-heavy-%d", queueID)
@@ -412,7 +413,7 @@ func setupRoutingServer(t *testing.T) *routingFixture {
 	queueID++
 	queues := PubSubOpts{
 		RequestQueue:          stdQueue,
-		RequestQueues:         []string{"heavy=" + heavyQueue},
+		RequestQueues:         map[string]string{"heavy": heavyQueue},
 		ResponseQueue:         responses,
 		PreResponseQueue:      responses,
 		NumPollers:            1,
@@ -425,7 +426,7 @@ func setupRoutingServer(t *testing.T) *routingFixture {
 	s, lis, err := serve(grpcutil.Opts{
 		Host: "127.0.0.1",
 		Port: 0,
-	}, "", queues, "", true, map[string][]string{}, casaddr, false)
+	}, "", queues, "", true, allowedPlatform, casaddr, false)
 	require.NoError(t, err)
 	go s.Serve(lis)
 	t.Cleanup(s.Stop)
@@ -476,7 +477,7 @@ func registerAction(t *testing.T, properties ...*pb.Platform_Property) *pb.Diges
 }
 
 func TestExecuteHeavyRouting(t *testing.T) {
-	f := setupRoutingServer(t)
+	f := setupRoutingServer(t, map[string][]string{})
 	heavy := registerAction(t, &pb.Platform_Property{Name: "worker-type", Value: "heavy"})
 	std := registerAction(t, &pb.Platform_Property{Name: "worker-type", Value: "standard"})
 
@@ -487,14 +488,44 @@ func TestExecuteHeavyRouting(t *testing.T) {
 	assert.Equal(t, std.Hash, receiveWithin(t, f.std, "standard").Hash)
 }
 
-func TestExecuteRoutingFallsBackToStandard(t *testing.T) {
-	f := setupRoutingServer(t)
+// TestExecuteRoutingWithPlatformValidation checks that worker-type is permitted for the configured queues
+// without having to be listed in the allowed platform, while other properties are still validated.
+func TestExecuteRoutingWithPlatformValidation(t *testing.T) {
+	f := setupRoutingServer(t, map[string][]string{"OSFamily": {"linux"}})
+	heavy := registerAction(t, &pb.Platform_Property{Name: "OSFamily", Value: "linux"}, &pb.Platform_Property{Name: "worker-type", Value: "heavy"})
+	f.execute(t, heavy)
+	assert.Equal(t, heavy.Hash, receiveWithin(t, f.heavy, "heavy").Hash)
 
 	for name, d := range map[string]*pb.Digest{
-		"no platform":                 registerAction(t),
-		"no worker-type property":     registerAction(t, &pb.Platform_Property{Name: "OSFamily", Value: "linux"}),
-		"unconfigured worker-type":    registerAction(t, &pb.Platform_Property{Name: "worker-type", Value: "gpu"}),
-		"action missing from the CAS": {Hash: strings.Repeat("ab", 32), SizeBytes: 10},
+		"unconfigured worker-type": registerAction(t, &pb.Platform_Property{Name: "worker-type", Value: "gpu"}),
+		"invalid other property":   registerAction(t, &pb.Platform_Property{Name: "OSFamily", Value: "windows"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			stream, err := f.client.Execute(context.Background(), &pb.ExecuteRequest{ActionDigest: d})
+			require.NoError(t, err)
+			_, err = stream.Recv()
+			assert.Equal(t, codes.InvalidArgument, status.Code(err))
+		})
+	}
+}
+
+func TestExecuteFailsIfActionCannotBeRead(t *testing.T) {
+	f := setupRoutingServer(t, map[string][]string{})
+	d := &pb.Digest{Hash: strings.Repeat("ab", 32), SizeBytes: 10}
+
+	stream, err := f.client.Execute(context.Background(), &pb.ExecuteRequest{ActionDigest: d})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.Error(t, err)
+}
+
+func TestExecuteRoutingFallsBackToStandard(t *testing.T) {
+	f := setupRoutingServer(t, map[string][]string{})
+
+	for name, d := range map[string]*pb.Digest{
+		"no platform":              registerAction(t),
+		"no worker-type property":  registerAction(t, &pb.Platform_Property{Name: "OSFamily", Value: "linux"}),
+		"unconfigured worker-type": registerAction(t, &pb.Platform_Property{Name: "worker-type", Value: "gpu"}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			f.execute(t, d)
@@ -503,11 +534,11 @@ func TestExecuteRoutingFallsBackToStandard(t *testing.T) {
 	}
 }
 
-func TestParseRequestQueues(t *testing.T) {
+func TestMergeRequestQueues(t *testing.T) {
 	tests := []struct {
 		name          string
 		requestQueue  string
-		requestQueues []string
+		requestQueues map[string]string
 		expected      map[string]string
 		err           string
 	}{
@@ -519,19 +550,13 @@ func TestParseRequestQueues(t *testing.T) {
 		{
 			name:          "default queue and extra queues",
 			requestQueue:  "mem://std",
-			requestQueues: []string{"heavy=mem://heavy", "gpu=mem://gpu"},
+			requestQueues: map[string]string{"heavy": "mem://heavy", "gpu": "mem://gpu"},
 			expected:      map[string]string{"standard": "mem://std", "heavy": "mem://heavy", "gpu": "mem://gpu"},
 		},
 		{
-			name:          "standard queue provided via the list",
-			requestQueues: []string{"standard=mem://std", "heavy=mem://heavy"},
+			name:          "standard queue provided via the map",
+			requestQueues: map[string]string{"standard": "mem://std", "heavy": "mem://heavy"},
 			expected:      map[string]string{"standard": "mem://std", "heavy": "mem://heavy"},
-		},
-		{
-			name:          "url containing an equals sign",
-			requestQueue:  "mem://std",
-			requestQueues: []string{"heavy=gcppubsub://projects/p/topics/t?opt=1"},
-			expected:      map[string]string{"standard": "mem://std", "heavy": "gcppubsub://projects/p/topics/t?opt=1"},
 		},
 		{
 			name: "nothing configured",
@@ -539,43 +564,31 @@ func TestParseRequestQueues(t *testing.T) {
 		},
 		{
 			name:          "no standard queue",
-			requestQueues: []string{"heavy=mem://heavy"},
+			requestQueues: map[string]string{"heavy": "mem://heavy"},
 			err:           "must be provided",
-		},
-		{
-			name:          "missing separator",
-			requestQueue:  "mem://std",
-			requestQueues: []string{"heavy"},
-			err:           "invalid request queue format",
 		},
 		{
 			name:          "empty name",
 			requestQueue:  "mem://std",
-			requestQueues: []string{"=mem://heavy"},
-			err:           "invalid request queue format",
+			requestQueues: map[string]string{"": "mem://heavy"},
+			err:           "invalid request queue",
 		},
 		{
 			name:          "empty url",
 			requestQueue:  "mem://std",
-			requestQueues: []string{"heavy="},
-			err:           "invalid request queue format",
+			requestQueues: map[string]string{"heavy": ""},
+			err:           "invalid request queue",
 		},
 		{
-			name:          "duplicate name",
+			name:          "standard queue configured twice",
 			requestQueue:  "mem://std",
-			requestQueues: []string{"heavy=mem://a", "heavy=mem://b"},
-			err:           "more than once",
-		},
-		{
-			name:          "standard queue overridden by the list",
-			requestQueue:  "mem://std",
-			requestQueues: []string{"standard=mem://other"},
-			err:           "more than once",
+			requestQueues: map[string]string{"standard": "mem://other"},
+			err:           "configured twice",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			urls, err := parseRequestQueues(tc.requestQueue, tc.requestQueues)
+			urls, err := mergeRequestQueues(tc.requestQueue, tc.requestQueues)
 			if tc.err != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.err)
@@ -585,6 +598,22 @@ func TestParseRequestQueues(t *testing.T) {
 			assert.Equal(t, tc.expected, urls)
 		})
 	}
+}
+
+// TestRequestQueuesFlagParsing checks that the queues can be given as name:url pairs, including urls containing colons.
+func TestRequestQueuesFlagParsing(t *testing.T) {
+	var opts PubSubOpts
+	_, err := flags.NewParser(&opts, flags.None).ParseArgs([]string{
+		"--response_queue=mem://responses",
+		"--pre_response_queue=mem://responses",
+		"--request_queues=heavy:gcppubsub://projects/p/topics/heavy",
+		"--request_queues=gpu:mem://gpu",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"heavy": "gcppubsub://projects/p/topics/heavy",
+		"gpu":   "mem://gpu",
+	}, opts.RequestQueues)
 }
 
 func recv(stream pb.Execution_ExecuteClient) (*longrunning.Operation, *pb.ExecuteOperationMetadata) {
