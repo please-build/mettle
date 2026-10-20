@@ -49,6 +49,11 @@ func ServeForever(opts grpcutil.Opts, casReplicator, assetReplicator, executorRe
 		bytestreamRe:    regexp.MustCompile("(?:uploads/[0-9a-f-]+/)?(blobs|compressed-blobs/zstd)/([0-9a-f]+)/([0-9]+)"),
 		timeout:         timeout,
 	}
+	healthSrv := &healthServer{
+		replicator:      casReplicator,
+		assetReplicator: assetReplicator,
+		exeReplicator:   executorReplicator,
+	}
 	opts.NoHealth = true // We will do this ourselves.
 	lis, s := grpcutil.NewServer(opts)
 	pb.RegisterCapabilitiesServer(s, srv)
@@ -62,7 +67,7 @@ func ServeForever(opts grpcutil.Opts, casReplicator, assetReplicator, executorRe
 		pb.RegisterExecutionServer(s, srv)
 	}
 	ppb.RegisterGCServer(s, srv)
-	hpb.RegisterHealthServer(s, srv)
+	hpb.RegisterHealthServer(s, healthSrv)
 	grpcutil.ServeForever(lis, s)
 }
 
@@ -73,7 +78,15 @@ type server struct {
 	timeout                                    time.Duration
 }
 
-func (s *server) Check(context.Context, *hpb.HealthCheckRequest) (*hpb.HealthCheckResponse, error) {
+// healthServer is a separate struct (rather than embedding hpb.UnimplementedHealthServer into server)
+// because ppb.UnimplementedGCServer and hpb.UnimplementedHealthServer both define a List method with
+// different signatures, which would cause a compile-time conflict.
+type healthServer struct {
+	hpb.UnimplementedHealthServer
+	replicator, assetReplicator, exeReplicator *trie.Replicator
+}
+
+func (s *healthServer) Check(context.Context, *hpb.HealthCheckRequest) (*hpb.HealthCheckResponse, error) {
 	for _, r := range []*trie.Replicator{s.replicator, s.assetReplicator, s.exeReplicator} {
 		if r != nil {
 			if err := r.Healthcheck(); err != nil {
@@ -84,10 +97,6 @@ func (s *server) Check(context.Context, *hpb.HealthCheckRequest) (*hpb.HealthChe
 	}
 	log.Debug("Passed healthcheck, all ranges serving")
 	return &hpb.HealthCheckResponse{Status: hpb.HealthCheckResponse_SERVING}, nil
-}
-
-func (s *server) Watch(*hpb.HealthCheckRequest, hpb.Health_WatchServer) error {
-	return status.Errorf(codes.Unimplemented, "grpc_health_v1.Watch not implemented")
 }
 
 func (s *server) GetCapabilities(ctx context.Context, req *pb.GetCapabilitiesRequest) (*pb.ServerCapabilities, error) {
@@ -126,7 +135,7 @@ func (s *server) GetCapabilities(ctx context.Context, req *pb.GetCapabilitiesReq
 			},
 		},
 		LowApiVersion:  &semver.SemVer{Major: 2, Minor: 0},
-		HighApiVersion: &semver.SemVer{Major: 2, Minor: 3},
+		HighApiVersion: &semver.SemVer{Major: 2, Minor: 12},
 	}
 	if s.exeReplicator != nil {
 		caps.ExecutionCapabilities = &pb.ExecutionCapabilities{
@@ -395,6 +404,14 @@ func (s *server) GetTree(req *pb.GetTreeRequest, srv pb.ContentAddressableStorag
 		return err
 	}
 	return srv.Send(r)
+}
+
+func (s *server) SpliceBlob(ctx context.Context, req *pb.SpliceBlobRequest) (*pb.SpliceBlobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "not implemented")
+}
+
+func (s *server) SplitBlob(ctx context.Context, req *pb.SplitBlobRequest) (*pb.SplitBlobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "not implemented")
 }
 
 func (s *server) Read(req *bs.ReadRequest, srv bs.ByteStream_ReadServer) error {

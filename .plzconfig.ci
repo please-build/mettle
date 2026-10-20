@@ -5,17 +5,14 @@ dircompress = true
 
 [plugin "go"]
 target = //plugins:go
-defaultstatic = false
+defaultstatic = true
 gotool = //third_party/go:toolchain|go
 coverageredesign = true
 
 [plugin "cc"]
-target = //plugins:cc
 defaultoptcflags = --std=c99 -O3 -pipe -DNDEBUG -Wall -Werror -Wno-error=stringop-overflow -Wno-error=misleading-indentation
 defaultdbgcflags = --std=c99 -g3 -pipe -DDEBUG -Wall -Werror -Wno-error=stringop-overflow -Wno-error=misleading-indentation
 
-[plugin "proto"]
-ProtocTool = //third_party/proto:protoc
 
 [display]
 systemstats = false

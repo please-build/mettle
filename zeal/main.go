@@ -2,7 +2,8 @@
 package main
 
 import (
-	"io/ioutil"
+	"os"
+
 	"strings"
 
 	"github.com/thought-machine/please-servers/cli"
@@ -58,7 +59,7 @@ func main() {
 
 	auth := make(map[string]string, len(opts.Auth))
 	for prefix, filename := range opts.Auth {
-		b, err := ioutil.ReadFile(filename)
+		b, err := os.ReadFile(filename)
 		if err != nil {
 			log.Fatalf("Failed to read auth token from %s: %s", filename, err)
 		}

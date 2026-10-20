@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +40,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"gocloud.dev/blob"
 	"gocloud.dev/gcerrors"
-	"golang.org/x/exp/slices"
 	"google.golang.org/api/googleapi"
 	bs "google.golang.org/genproto/googleapis/bytestream"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
@@ -257,7 +257,7 @@ func (s *server) GetCapabilities(ctx context.Context, req *pb.GetCapabilitiesReq
 			},
 		},
 		LowApiVersion:  &semver.SemVer{Major: 2, Minor: 0},
-		HighApiVersion: &semver.SemVer{Major: 2, Minor: 3},
+		HighApiVersion: &semver.SemVer{Major: 2, Minor: 12},
 	}, nil
 }
 
@@ -557,7 +557,7 @@ func (s *server) readCompressed(ctx context.Context, prefix string, digest *pb.D
 		return r, false, err
 	}
 	if s.isEmpty(digest) {
-		return ioutil.NopCloser(bytes.NewReader(nil)), compressed, nil
+		return io.NopCloser(bytes.NewReader(nil)), compressed, nil
 	}
 	if s.readRedis != nil && prefix == CASPrefix && digest.SizeBytes < s.largeBlobSize {
 		// NOTE: we could use GETRANGE here, but given it's a bit more expensive on the redis
@@ -566,7 +566,7 @@ func (s *server) readCompressed(ctx context.Context, prefix string, digest *pb.D
 		if err != nil && err != redis.Nil {
 			log.Warningf("Failed to get blob in Redis: %v", err)
 		} else if err != redis.Nil && blob != nil && limit == 0 {
-			return ioutil.NopCloser(bytes.NewReader(nil)), false, nil
+			return io.NopCloser(bytes.NewReader(nil)), false, nil
 		} else if err != redis.Nil && blob != nil && limit > 0 {
 			return io.NopCloser(bytes.NewReader(blob[offset : offset+limit])), false, nil
 		} else if err != redis.Nil && blob != nil && limit < 0 {
@@ -630,10 +630,18 @@ func (s *server) QueryWriteStatus(ctx context.Context, req *bs.QueryWriteStatusR
 	return nil, status.Errorf(codes.NotFound, "write %s not found", req.ResourceName)
 }
 
+func (s *server) SpliceBlob(ctx context.Context, req *pb.SpliceBlobRequest) (*pb.SpliceBlobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "not implemented")
+}
+
+func (s *server) SplitBlob(ctx context.Context, req *pb.SplitBlobRequest) (*pb.SplitBlobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "not implemented")
+}
+
 func (s *server) readBlob(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
 	if length == 0 || strings.Contains(key, digest.Empty.Hash) {
 		// Special case any empty read request
-		return ioutil.NopCloser(bytes.NewReader(nil)), nil
+		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
 	start := time.Now()
 	defer func() { readLatencies.Observe(time.Since(start).Seconds()) }()

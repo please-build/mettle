@@ -1,5 +1,5 @@
 [please]
-version = >=17.0.0
+version = >=17.21.0
 
 [build]
 path = /usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
@@ -27,8 +27,8 @@ moduledir = third_party/python
 
 [plugin "cc"]
 target = //plugins:cc
-defaultoptcflags = --std=c99 -O3 -pipe -DNDEBUG -Wall -Werror -Wno-error=stringop-overflow -Wno-error=misleading-indentation -Wno-error=unknown-warning-option
-defaultdbgcflags = --std=c99 -g3 -pipe -DDEBUG -Wall -Werror -Wno-error=stringop-overflow -Wno-error=misleading-indentation -Wno-error=unknown-warning-option
+defaultoptcflags = --std=c99 -O3 -pipe -DNDEBUG -Wall -Werror -Wno-error=stringop-overflow -Wno-error=misleading-indentation
+defaultdbgcflags = --std=c99 -g3 -pipe -DDEBUG -Wall -Werror -Wno-error=stringop-overflow -Wno-error=misleading-indentation
 
 [plugin "shell"]
 target = //plugins:shell

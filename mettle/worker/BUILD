@@ -52,6 +52,14 @@ go_test(
     srcs = glob(["*_test.go"]),
     deps = [
         ":worker",
+        "///third_party/go/github.com_bazelbuild_remote-apis-sdks//go/pkg/command",
+        "///third_party/go/github.com_bazelbuild_remote-apis-sdks//go/pkg/digest",
+        "///third_party/go/github.com_bazelbuild_remote-apis-sdks//go/pkg/filemetadata",
+        "///third_party/go/github.com_bazelbuild_remote-apis-sdks//go/pkg/uploadinfo",
+        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/execution/v2",
+        "///third_party/go/github.com_golang_protobuf//proto",
         "///third_party/go/github.com_stretchr_testify//assert",
+        "///third_party/go/github.com_stretchr_testify//require",
+        "//rexclient",
     ],
 )

@@ -1,3 +1,21 @@
+Version 11.18.0
+---------------
+    * Advertise support for REAPI v2.12
+    * Handle newer `output_symlinks` field as well as older, deprecated fields.
+    * Populate `root_directory_digest` on output directories, so clients can use them without fetching the whole Tree.
+
+Version 11.17.0
+---------------
+    * Upgrade Go toolchain, packages and Please plugin
+
+Version 11.16.9
+---------------
+    * Apply defaultstatic = true to fix Mettle broken deployment
+
+Version 11.16.8
+---------------
+    * This change removes the temporary logging that was added to help investigate the hanging processes.
+
 Version 11.16.7
 ---------------
     * Improve runCommand timeout diagnostics with logProcChain() with child processes
@@ -9,7 +27,7 @@ Version 11.16.6
 Version 11.16.5
 ---------------
     * Improve runCommand timeout diagnostics (process snapshot + output summary)
-    
+
 Version 11.16.4
 ---------------
     * Kill parent and all child processes via process group on worker timeout. Log hanging processes

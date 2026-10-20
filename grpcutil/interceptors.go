@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus"
-	"io/ioutil"
+	"os"
+
 	"net"
 	"strings"
 
@@ -83,7 +84,7 @@ func unaryAuthInterceptor(opts Opts) []grpc.UnaryServerInterceptor {
 	if opts.TokenFile == "" {
 		return nil
 	}
-	contents, err := ioutil.ReadFile(opts.TokenFile)
+	contents, err := os.ReadFile(opts.TokenFile)
 	if err != nil {
 		log.Fatalf("Failed to read token file: %s", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
+
 	"os"
 	"path"
 	"strings"
@@ -365,7 +365,7 @@ func (w *worker) linkAll(files []fileNode) error {
 func (w *worker) writeFiles(files []fileNode, data []byte, dg sdkdigest.Digest) error {
 	w.iolimiter <- struct{}{}
 	defer func() { <-w.iolimiter }()
-	if err := ioutil.WriteFile(files[0].Name, data, fileMode(files[0].IsExecutable)); err != nil {
+	if err := os.WriteFile(files[0].Name, data, fileMode(files[0].IsExecutable)); err != nil {
 		return err
 	} else if err := w.linkAll(files); err != nil {
 		return err

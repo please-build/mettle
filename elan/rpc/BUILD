@@ -60,7 +60,7 @@ go_test(
 genrule(
     name = "test_data",
     cmd = [
-        'for i in `seq 1 10000`; do echo "$i ----------------------------------------- $i" >> "tmp.txt"; done',
+        'for i in `seq 1 100000`; do echo "$i ----------------------------------------- $i" >> "tmp.txt"; done',
         'HASH="`(command -v sha256sum >/dev/null 2>&1 && sha256sum tmp.txt || shasum -a 256 tmp.txt) | cut -c -64`"',
         'PREFIX="${HASH:0:2}"',
         'mkdir -p "data/cas/${PREFIX}" "data/zstd_cas/${PREFIX}"',

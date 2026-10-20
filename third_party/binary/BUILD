@@ -1,4 +1,4 @@
-PUKU_VERSION = "1.16.0"
+PUKU_VERSION = "1.17.1"
 
 remote_file(
     name = "puku",

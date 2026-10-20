@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
+	"os"
 	"strings"
 	"time"
 
@@ -61,7 +61,7 @@ func parseAddress(url string, tlsDefault bool) (string, bool) {
 
 // mustLoadCACert loads a CA cert from a file and dies on any errors.
 func mustLoadCACert(filename string) *x509.CertPool {
-	ca, err := ioutil.ReadFile(filename)
+	ca, err := os.ReadFile(filename)
 	if err != nil {
 		log.Fatalf("Failed to read CA cert from %s: %s", filename, err)
 	}
@@ -73,7 +73,7 @@ func mustLoadCACert(filename string) *x509.CertPool {
 }
 
 func mustLoadToken(tokenFile string) string {
-	contents, err := ioutil.ReadFile(tokenFile)
+	contents, err := os.ReadFile(tokenFile)
 	if err != nil {
 		log.Fatalf("Failed to read token file: %s", err)
 	}

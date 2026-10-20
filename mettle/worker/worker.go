@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 	psraw "cloud.google.com/go/pubsub/apiv1"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/client"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/command"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/filemetadata"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/uploadinfo"
 	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
@@ -371,7 +373,7 @@ func initialiseWorker(instanceName, requestQueue, responseQueue, name, storage, 
 	}
 	// Load the version file if given
 	if versionFile != "" {
-		if b, err := ioutil.ReadFile(versionFile); err != nil {
+		if b, err := os.ReadFile(versionFile); err != nil {
 			log.Errorf("Failed to read version file: %s", err)
 		} else {
 			w.version = strings.TrimSpace(string(b))
@@ -755,7 +757,7 @@ func (w *worker) createTempDir() error {
 		}
 	}
 	log.Warning("Failed to create work dir: %s. Falling back to temp dir", err)
-	dir, err = ioutil.TempDir(w.rootDir, "mettle_")
+	dir, err = os.MkdirTemp(w.rootDir, "mettle_")
 	w.dir = dir
 	return err
 }
@@ -1007,20 +1009,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		return err
 	}
 
-	pid := cmd.Process.Pid
-
-	// make a snapshot of processes if context.DeadlineExceeded
-	go func(pid int) {
-		<-ctx.Done()
-		// early exit if no timeout
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return
-		}
-		// # TODO(INFRA-130229): Revert this temporary change mettle timeouts investigations are completed
-		w.logProcOnTimeout(pid)
-		w.logProcChain(pid)
-	}(pid)
-
 	err := cmd.Wait()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -1070,207 +1058,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		return ErrTimeout
 	}
 	return err
-}
-
-// logProcOnTimeout logs /proc diagnostics for the timed-out pid and its process group.
-// It does not rely on `ps` existing in the container.
-func (w *worker) logProcOnTimeout(pid int) {
-	const maxFDs = 200
-	const maxTargetLen = 256
-	p := strconv.Itoa(pid)
-	base := filepath.Join("/proc", p)
-	var errs []error
-
-	cmdlineBytes, err := os.ReadFile(filepath.Join(base, "cmdline"))
-	cmdline := ""
-	if err != nil {
-		errs = append(errs, fmt.Errorf("cmdline: %v", err))
-	} else if len(cmdlineBytes) > 0 {
-		cmdline = strings.TrimSpace(strings.ReplaceAll(string(cmdlineBytes), "\x00", " "))
-	}
-
-	wchanBytes, err := os.ReadFile(filepath.Join(base, "wchan"))
-	wchan := ""
-	if err != nil {
-		errs = append(errs, fmt.Errorf("wchan: %v", err))
-	} else if len(wchanBytes) > 0 {
-		wchan = strings.TrimSpace(string(wchanBytes))
-	}
-
-	var fds []string
-	entries, err := os.ReadDir(filepath.Join(base, "fd"))
-	if err != nil {
-		errs = append(errs, fmt.Errorf("fd: %v", err))
-	} else {
-		for i, e := range entries {
-			if i >= maxFDs {
-				fds = append(fds, "...truncated")
-				break
-			}
-			target, err := os.Readlink(filepath.Join(base, "fd", e.Name()))
-			if err != nil {
-				continue
-			}
-			if len(target) > maxTargetLen {
-				target = target[:maxTargetLen] + "…"
-			}
-			fds = append(fds, e.Name()+" -> "+target)
-		}
-	}
-
-	var errSummary string
-	if len(errs) > 0 {
-		s := make([]string, len(errs))
-		for i, e := range errs {
-			s[i] = e.Error()
-		}
-		errSummary = strings.Join(s, ", ")
-	}
-
-	logr.WithFields(logrus.Fields{
-		"hash":     w.actionDigest.Hash,
-		"pid":      pid,
-		"cmdline":  cmdline,
-		"wchan":    wchan,
-		"fds":      fds,
-		"proc_err": errSummary,
-	}).Debug("Deadline exceeded: /proc snapshot")
-}
-
-// logProcTree logs a bounded process subtree starting from pid.
-// Example:
-//
-// 24877:bash[S - sleeping/waiting]{do_wait} -> 24890:test_binary[D - io_wait)]{tcp_recvmsg}
-// 24877:bash[S - sleeping/waiting]{do_wait} -> 24891:tee[S - sleeping/waitin]{pipe_read}
-func (w *worker) logProcChain(pid int) {
-	const (
-		maxDepth = 6
-		maxNodes = 40
-	)
-	lines := make([]string, 0, maxNodes)
-	nodes := 0
-	var walk func(pid, depth int, path []string)
-	walk = func(pid, depth int, path []string) {
-		if depth > maxDepth || nodes >= maxNodes {
-			return
-		}
-
-		current := formatProc(pid)
-		path = append(path, current)
-
-		children := childPIDs(pid)
-		if len(children) == 0 {
-			lines = append(lines, strings.Join(path, " -> "))
-			nodes++
-			return
-		}
-		for _, c := range children {
-			if nodes >= maxNodes {
-				return
-			}
-			walk(c, depth+1, path)
-		}
-	}
-
-	walk(pid, 0, nil)
-
-	logr.WithFields(logrus.Fields{
-		"hash": w.actionDigest.Hash,
-		"pid":  pid,
-		"tree": strings.Join(lines, "\n"),
-	}).Debug("Deadline exceeded: /proc process tree")
-}
-
-// formatProc creates formatted log line
-func formatProc(pid int) string {
-	state := procState(pid)
-	wchan := readTrim(filepath.Join(procBase(pid), "wchan"))
-
-	return fmt.Sprintf(
-		"%d:%s[%s - %s]{%s}",
-		pid,
-		procName(pid),
-		state,
-		stateComment(state),
-		wchan,
-	)
-}
-
-// procBase returns the /proc path for a pid
-func procBase(pid int) string {
-	return filepath.Join("/proc", strconv.Itoa(pid))
-}
-
-// readTrim reads a file and returns trimmed content, or "" on error/empty content
-func readTrim(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil || len(b) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
-// procName returns the process name from /proc/<pid>/comm, or "?" if unavailable
-func procName(pid int) string {
-	name := readTrim(filepath.Join(procBase(pid), "comm"))
-	if name == "" {
-		return "?"
-	}
-	return name
-}
-
-// procState returns the Linux process state code from /proc/<pid>/status
-func procState(pid int) string {
-	b, err := os.ReadFile(filepath.Join(procBase(pid), "status"))
-	if err != nil {
-		return ""
-	}
-	for _, ln := range strings.Split(string(b), "\n") {
-		k, v, ok := strings.Cut(ln, ":")
-		if !ok || strings.TrimSpace(k) != "State" {
-			continue
-		}
-		if f := strings.Fields(strings.TrimSpace(v)); len(f) > 0 {
-			return f[0]
-		}
-		return ""
-	}
-	return ""
-}
-
-// childPIDs returns direct children of pid from /proc/<pid>/task/<pid>/children
-func childPIDs(pid int) []int {
-	b, err := os.ReadFile(filepath.Join(procBase(pid), "task", strconv.Itoa(pid), "children"))
-	if err != nil || len(b) == 0 {
-		return nil
-	}
-	var out []int
-	for _, s := range strings.Fields(string(b)) {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// stateComment is a helper to translate tail_state code into text
-func stateComment(s string) string {
-	switch s {
-	case "R":
-		return "running"
-	case "S":
-		return "sleeping/waiting"
-	case "D":
-		return "io_wait"
-	case "I":
-		return "idle"
-	case "T":
-		return "stopped"
-	case "Z":
-		return "zombie"
-	default:
-		return "unknown"
-	}
 }
 
 // writeUncachedResult attempts to write an uncached action result proto.
@@ -1450,11 +1237,52 @@ func (w *worker) collectOutputs(ar *pb.ActionResult, cmd *pb.Command) error {
 	}
 	err = w.client.UploadIfMissing(entries, compressors)
 
+	setRootDirectoryDigests(ar2.OutputDirectories, m)
 	ar.OutputFiles = ar2.OutputFiles
 	ar.OutputDirectories = ar2.OutputDirectories
 	ar.OutputFileSymlinks = ar2.OutputFileSymlinks
 	ar.OutputDirectorySymlinks = ar2.OutputDirectorySymlinks
+	ar.OutputSymlinks = allOutputSymlinks(ar2)
 	return err
+}
+
+// setRootDirectoryDigests populates root_directory_digest on each output directory (REAPI 2.8), which
+// lets clients use an output directory without fetching its whole Tree.
+// ComputeOutputsToUpload already uploads every Directory individually as well as the Tree, so we
+// only need to find the root's digest. We use the root as it appears in the Tree, which includes the
+// pack property if there is one.
+// This is best-effort: if we can't work it out we leave it unset, and clients can still use the Tree.
+func setRootDirectoryDigests(dirs []*pb.OutputDirectory, entries map[digest.Digest]*uploadinfo.Entry) {
+	for _, dir := range dirs {
+		entry, present := entries[digest.NewFromProtoUnvalidated(dir.TreeDigest)]
+		if !present || !entry.IsBlob() {
+			log.Warning("Can't find Tree for output directory %s, not setting its root directory digest", dir.Path)
+			continue
+		}
+		tree := &pb.Tree{}
+		if err := proto.Unmarshal(entry.Contents, tree); err != nil {
+			log.Warning("Failed to decode Tree for output directory %s: %s", dir.Path, err)
+			continue
+		}
+		rootDigest, err := digest.NewFromMessage(tree.Root)
+		if err != nil {
+			log.Warning("Failed to calculate root directory digest for output directory %s: %s", dir.Path, err)
+			continue
+		} else if _, present := entries[rootDigest]; !present {
+			log.Warning("Root directory for output directory %s is not being uploaded, not setting its digest", dir.Path)
+			continue
+		}
+		dir.RootDirectoryDigest = rootDigest.ToProto()
+	}
+}
+
+// allOutputSymlinks returns all the output symlinks from an action result, preferring output_symlinks
+// if it's populated and falling back to the deprecated per-type fields otherwise.
+func allOutputSymlinks(ar *pb.ActionResult) []*pb.OutputSymlink {
+	if len(ar.OutputSymlinks) > 0 {
+		return ar.OutputSymlinks
+	}
+	return slices.Concat(ar.OutputFileSymlinks, ar.OutputDirectorySymlinks)
 }
 
 // update sends an update on the response channel
