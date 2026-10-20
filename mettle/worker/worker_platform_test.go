@@ -15,6 +15,7 @@ func TestCopyPlatformProperties(t *testing.T) {
 
 	assert.Equal(t, original, copied)
 
+	// Mutating the original must not affect the copy
 	original["filesystem"] = "tmpfs"
 	assert.Equal(t, "disk", copied["filesystem"])
 }

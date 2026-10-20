@@ -602,7 +602,7 @@ func (w *worker) logPlatformProperties() {
 	logr.WithFields(logrus.Fields{
 		"hash":               w.actionDigest.Hash,
 		"platformProperties": formatPlatformProperties(w.platformProps),
-	}).Info("Action specifies platform properties; would use them to select sandbox filesystem")
+	}).Info("Action platform properties")
 }
 
 // forceShutdown sends any shutdown reports and calls log.Fatal() to shut down the worker
