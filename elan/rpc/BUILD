@@ -71,3 +71,15 @@ genrule(
     test_only = True,
     tools = ["//scripts:compress"],
 )
+
+go_test(
+    name = "ratelimit_test",
+    srcs = ["ratelimit_test.go"],
+    deps = [
+        ":rpc",
+        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/execution/v2",
+        "///third_party/go/github.com_stretchr_testify//assert",
+        "///third_party/go/google.golang.org_grpc//codes",
+        "///third_party/go/google.golang.org_grpc//status",
+    ],
+)
