@@ -49,6 +49,13 @@ const expiryTime = 1 * time.Hour
 // resumptionTime is the maximum age of jobs that we permit to be resumed.
 var resumptionTime = 10 * time.Minute
 
+// completionRetentionTime is how long we remember that an action completed, so we can discard stale messages about it
+// that Pub/Sub redelivers late. It needs to comfortably exceed the subscription's ack deadline plus its maximum retry backoff.
+const completionRetentionTime = 30 * time.Minute
+
+// publishTime returns the time a message was published. It's a variable so tests can control it.
+var publishTime = common.PublishTime
+
 var totalRequests = prometheus.NewCounter(prometheus.CounterOpts{
 	Namespace: "mettle",
 	Name:      "requests_total",
@@ -103,6 +110,18 @@ var deleteJobsDurations = prometheus.NewHistogram(prometheus.HistogramOpts{
 	Buckets:   prometheus.DefBuckets,
 })
 
+var staleMessages = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: "mettle",
+	Name:      "stale_messages_total",
+	Help:      "Number of messages discarded because they were published before the action last completed",
+})
+
+var abandonedJobs = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: "mettle",
+	Name:      "abandoned_jobs_total",
+	Help:      "Number of incomplete jobs dropped, ending the streams of any clients waiting on them",
+})
+
 var metrics = []prometheus.Collector{
 	totalRequests,
 	totalFailedActions,
@@ -114,6 +133,8 @@ var metrics = []prometheus.Collector{
 	responsePublishFailure,
 	preResponsePublishDurations,
 	deleteJobsDurations,
+	staleMessages,
+	abandonedJobs,
 }
 
 var register sync.Once
@@ -131,8 +152,8 @@ type PubSubOpts struct {
 	ResponseQueue         string            `short:"r" long:"response_queue" env:"API_RESPONSE_QUEUE" required:"true" description:"URL defining the pub/sub queue to connect to for sending responses, e.g. gcppubsub://my-response-queue"`
 	ResponseQueueSuffix   string            `long:"response_queue_suffix" env:"API_RESPONSE_QUEUE_SUFFIX" description:"Suffix to apply to the response queue name"`
 	PreResponseQueue      string            `long:"pre_response_queue" env:"API_PRE_RESPONSE_QUEUE" required:"true" description:"URL describing the pub/sub queue to connect to for preloading responses to other servers"`
-	NumPollers            int               `long:"num_pollers" env:"API_NUM_POLLERS" default:"10"`
-	SubscriptionBatchSize uint              `long:"subscription_batch_size" env:"API_SUBSCRIPTION" default:"100"`
+	NumPollers            int               `long:"num_pollers" env:"API_NUM_POLLERS" default:"10" description:"Number of goroutines receiving messages from the response subscription"`
+	SubscriptionBatchSize uint              `long:"subscription_batch_size" env:"API_SUBSCRIPTION" default:"100" description:"Maximum number of messages to fetch from the response subscription in a single pull"`
 }
 
 // ServeForever serves on the given port until terminated.
@@ -219,6 +240,7 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 		responses:        common.MustOpenSubscription(subscriptionURL, queueOpts.SubscriptionBatchSize),
 		preResponses:     common.MustOpenTopic(queueOpts.PreResponseQueue),
 		jobs:             map[string]*job{},
+		completed:        map[string]time.Time{},
 		platform:         allowedPlatform,
 		client:           client,
 		numPollers:       queueOpts.NumPollers,
@@ -269,6 +291,7 @@ type server struct {
 	responses        *pubsub.Subscription
 	preResponses     *pubsub.Topic
 	jobs             map[string]*job
+	completed        map[string]time.Time // Publish time of the message that last completed each action
 	platform         map[string][]string
 	mutex            sync.Mutex
 	numPollers       int
@@ -403,10 +426,28 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 		// We didn't create a new execution, so don't need to send a request for a new build.
 		return s.streamEvents(req.ActionDigest, ch, stream)
 	}
+	// Submit the request before telling anyone else about it; if it fails we must not leave a job behind that
+	// looks like it's queued, since anyone resuming it would wait forever for an execution that will never happen.
+	b, _ := proto.Marshal(req)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := topic.Send(ctx, &pubsub.Message{
+		Body:     b,
+		Metadata: platform,
+	}); err != nil {
+		requestPublishFailure.Inc()
+		log.Error("Failed to submit work to stream: %s", err)
+		s.mutex.Lock()
+		if j, present := s.jobs[req.ActionDigest.Hash]; present && !j.Done {
+			s.abandonJob(req.ActionDigest.Hash, j)
+		}
+		s.mutex.Unlock()
+		return status.Errorf(codes.Unavailable, "Failed to submit work: %s", err)
+	}
 	// Dispatch a pre-emptive response message to let our colleagues know we've queued it.
 	// We will also receive & forward this message.
-	b := common.MarshalOperation(pb.ExecutionStage_QUEUED, req.ActionDigest, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	b = common.MarshalOperation(pb.ExecutionStage_QUEUED, req.ActionDigest, nil, nil)
+	ctx, cancel = context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	preResponseStartTime := time.Now()
 	if err := common.PublishWithOrderingKey(ctx, s.preResponses, b, req.ActionDigest.Hash, s.name); err != nil {
@@ -414,18 +455,6 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 		log.Error("Failed to communicate pre-response message: %s", err)
 	}
 	preResponsePublishDurations.Observe(time.Since(preResponseStartTime).Seconds())
-	b, _ = proto.Marshal(req)
-	ctx, cancel = context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := topic.Send(ctx, &pubsub.Message{
-		Body:     b,
-		Metadata: platform,
-	}); err != nil {
-		requestPublishFailure.Inc()
-		log.Error("Failed to submit work to stream: %s", err)
-		return err
-	}
 	return s.streamEvents(req.ActionDigest, ch, stream)
 }
 
@@ -470,13 +499,18 @@ func (s *server) streamEvents(digest *pb.Digest, ch <-chan *longrunning.Operatio
 			return err
 		}
 		if op.Done {
-			break
+			logr.WithFields(logrus.Fields{
+				"hash": digest.Hash,
+			}).Debug("Completed stream")
+			return nil
 		}
 	}
+	// The channel was closed before the job completed, which means we abandoned it. Returning Unavailable
+	// makes the client retry, which will resubmit the action if nobody else has done so in the meantime.
 	logr.WithFields(logrus.Fields{
 		"hash": digest.Hash,
-	}).Debug("Completed stream")
-	return nil
+	}).Warn("Ending stream for abandoned job")
+	return status.Errorf(codes.Unavailable, "Execution of %s was abandoned, please retry", digest.Hash)
 }
 
 // eventStream registers an event stream for a job.
@@ -596,6 +630,19 @@ func (s *server) process(msg *pubsub.Message) {
 	}
 	worker := common.WorkerName(msg)
 	key := metadata.ActionDigest.Hash
+	published := publishTime(msg)
+	if published.IsZero() {
+		published = time.Now()
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if completed, present := s.completed[key]; present && !published.After(completed) {
+		// Pub/Sub can redeliver messages late, possibly after we've deleted the job. Without this check a stale
+		// progress message would recreate it as a job that looks to be in progress but will never complete.
+		log.Warning("Discarding %s message for %s from %s published at %s, before it completed at %s", metadata.Stage, key, worker, published, completed)
+		staleMessages.Inc()
+		return
+	}
 	if metadata.Stage == pb.ExecutionStage_COMPLETED {
 		if response := unmarshalResponse(op); response != nil && response.Status != nil && response.Status.Code != int32(codes.OK) {
 			log.Warning("Got an update for %s from %s, failed update: %s. Done: %v", key, worker, response.Status.Message, op.Done)
@@ -607,8 +654,6 @@ func (s *server) process(msg *pubsub.Message) {
 	} else {
 		log.Debug("Got an update for %s from %s, now %s. Done: %v", key, worker, metadata.Stage, op.Done)
 	}
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	j, present := s.jobs[key]
 	if !present {
 		// This is legit, we are getting an update about a job someone else started.
@@ -628,6 +673,7 @@ func (s *server) process(msg *pubsub.Message) {
 			return
 		} else if op.Done {
 			j.Done = true
+			s.completed[key] = published
 		}
 		j.Current = op
 		j.LastUpdate = time.Now()
@@ -651,14 +697,41 @@ func (s *server) process(msg *pubsub.Message) {
 
 func (s *server) periodicallyDeleteJobs() {
 	for range s.deleteJobsTicker.C {
-		s.mutex.Lock()
-		log.Debug("Starting clean")
-		startTime := time.Now()
-		maps.DeleteFunc(s.jobs, shouldDeleteJob)
-		s.mutex.Unlock()
-		log.Debug("Finished clean")
-		deleteJobsDurations.Observe(time.Since(startTime).Seconds())
+		s.deleteJobs()
 	}
+}
+
+// deleteJobs deletes any jobs that we no longer need to keep track of.
+func (s *server) deleteJobs() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	log.Debug("Starting clean")
+	startTime := time.Now()
+	for digest, j := range s.jobs {
+		if !shouldDeleteJob(digest, j) {
+			continue
+		} else if j.Done {
+			delete(s.jobs, digest)
+		} else {
+			s.abandonJob(digest, j)
+		}
+	}
+	maps.DeleteFunc(s.completed, func(digest string, t time.Time) bool {
+		return time.Since(t) > completionRetentionTime
+	})
+	log.Debug("Finished clean")
+	deleteJobsDurations.Observe(time.Since(startTime).Seconds())
+}
+
+// abandonJob deletes an incomplete job and closes any streams waiting on it, which causes their clients to retry.
+// The mutex must be held when calling this.
+func (s *server) abandonJob(digest string, j *job) {
+	log.Warning("Abandoning incomplete job %s with %d listeners, last updated %s", digest, len(j.Streams), j.LastUpdate)
+	for _, stream := range j.Streams {
+		close(stream)
+	}
+	delete(s.jobs, digest)
+	abandonedJobs.Inc()
 }
 
 func shouldDeleteJob(digest string, j *job) bool {

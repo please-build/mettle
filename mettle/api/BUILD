@@ -46,5 +46,6 @@ go_test(
         "//grpcutil",
         "//mettle/common",
         "//proto/mettle",
+        "//rexclient",
     ],
 )

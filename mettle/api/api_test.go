@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/thought-machine/please-servers/grpcutil"
 	"github.com/thought-machine/please-servers/mettle/common"
+	"github.com/thought-machine/please-servers/rexclient"
 )
 
 const (
@@ -759,4 +761,161 @@ func (c cas) GetCapabilities(ctx context.Context, req *pb.GetCapabilitiesRequest
 func TestMain(m *testing.M) {
 	grpcutil.Silence()
 	os.Exit(m.Run())
+}
+
+// fakeStream is a minimal implementation of an Execute stream that records what is sent on it.
+type fakeStream struct {
+	pb.Execution_ExecuteServer
+	ops []*longrunning.Operation
+}
+
+func (f *fakeStream) Send(op *longrunning.Operation) error {
+	f.ops = append(f.ops, op)
+	return nil
+}
+
+func (f *fakeStream) Context() context.Context {
+	return context.Background()
+}
+
+func newTestServer() *server {
+	return &server{
+		jobs:      map[string]*job{},
+		completed: map[string]time.Time{},
+	}
+}
+
+// testPublishTimeKey is a metadata key used to tell the server when a message was published, in place of Pub/Sub.
+const testPublishTimeKey = "test_publish_time"
+
+// usePublishTimeFromMetadata makes the server read publish times from message metadata for the duration of a test.
+func usePublishTimeFromMetadata(t *testing.T) {
+	old := publishTime
+	publishTime = func(msg *pubsub.Message) time.Time {
+		published, _ := time.Parse(time.RFC3339Nano, msg.Metadata[testPublishTimeKey])
+		return published
+	}
+	t.Cleanup(func() { publishTime = old })
+}
+
+// progressMessage returns a message from the response queue updating the given action to the given stage.
+func progressMessage(hash string, stage pb.ExecutionStage_Value, published time.Time) *pubsub.Message {
+	metadata, _ := ptypes.MarshalAny(&pb.ExecuteOperationMetadata{
+		Stage:        stage,
+		ActionDigest: &pb.Digest{Hash: hash},
+	})
+	op := &longrunning.Operation{Name: hash, Metadata: metadata}
+	if stage == pb.ExecutionStage_COMPLETED {
+		response, _ := ptypes.MarshalAny(&pb.ExecuteResponse{Result: &pb.ActionResult{}})
+		op.Done = true
+		op.Result = &longrunning.Operation_Response{Response: response}
+	}
+	b, _ := proto.Marshal(op)
+	return &pubsub.Message{
+		Body:     b,
+		Metadata: map[string]string{testPublishTimeKey: published.Format(time.RFC3339Nano)},
+	}
+}
+
+func TestStaleMessagesDoNotRecreateCompletedJobs(t *testing.T) {
+	usePublishTimeFromMetadata(t)
+	s := newTestServer()
+	const hash = uncachedHash
+	completed := time.Now()
+
+	s.process(progressMessage(hash, pb.ExecutionStage_COMPLETED, completed))
+	require.Contains(t, s.jobs, hash)
+	assert.True(t, s.jobs[hash].Done)
+
+	// Once the retention time has passed the job gets deleted.
+	s.jobs[hash].LastUpdate = time.Now().Add(-2 * retentionTime)
+	s.deleteJobs()
+	require.NotContains(t, s.jobs, hash)
+
+	// Messages that were published before it completed but have been redelivered late should not recreate it.
+	s.process(progressMessage(hash, pb.ExecutionStage_QUEUED, completed.Add(-2*time.Second)))
+	s.process(progressMessage(hash, pb.ExecutionStage_EXECUTING, completed.Add(-time.Second)))
+	s.process(progressMessage(hash, pb.ExecutionStage_COMPLETED, completed))
+	assert.NotContains(t, s.jobs, hash)
+
+	// A new execution started after it completed should be tracked as normal.
+	s.process(progressMessage(hash, pb.ExecutionStage_QUEUED, completed.Add(time.Second)))
+	require.Contains(t, s.jobs, hash)
+	assert.False(t, s.jobs[hash].Done)
+
+	// A late duplicate of the previous completion shouldn't complete the new execution...
+	s.process(progressMessage(hash, pb.ExecutionStage_COMPLETED, completed))
+	assert.False(t, s.jobs[hash].Done)
+
+	// ...but its own completion should.
+	s.process(progressMessage(hash, pb.ExecutionStage_COMPLETED, completed.Add(2*time.Second)))
+	assert.True(t, s.jobs[hash].Done)
+}
+
+func TestCompletionsAreForgottenAfterRetentionTime(t *testing.T) {
+	s := newTestServer()
+	s.completed["old"] = time.Now().Add(-completionRetentionTime - time.Minute)
+	s.completed["new"] = time.Now()
+	s.deleteJobs()
+	assert.NotContains(t, s.completed, "old")
+	assert.Contains(t, s.completed, "new")
+}
+
+func TestAbandonedJobEndsStreams(t *testing.T) {
+	s := newTestServer()
+	d := &pb.Digest{Hash: uncachedHash}
+	ch, created := s.eventStream(d, true)
+	require.True(t, created)
+
+	// The job never progresses, so eventually gets deleted.
+	s.jobs[d.Hash].LastUpdate = time.Now().Add(-3 * expiryTime)
+	s.deleteJobs()
+	assert.NotContains(t, s.jobs, d.Hash)
+
+	// The client waiting on it should get an error so it retries, rather than waiting forever.
+	err := s.streamEvents(d, ch, &fakeStream{})
+	assert.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+func TestFailedSubmissionDoesNotLeaveJobBehind(t *testing.T) {
+	client, err := rexclient.New("test", setupCASServer(), false, "")
+	require.NoError(t, err)
+	d := registerAction(t)
+	requests := fmt.Sprintf("mem://failing-requests-%d", queueID)
+	responses := fmt.Sprintf("mem://failing-responses-%d", queueID)
+	queueID++
+	failing := common.MustOpenTopic(requests)
+	require.NoError(t, failing.Shutdown(context.Background()))
+	s := newTestServer()
+	s.client = client
+	s.requests = map[string]*pubsub.Topic{defaultRequestQueue: failing}
+	s.preResponses = common.MustOpenTopic(responses)
+
+	req := &pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}
+	err = s.Execute(req, &fakeStream{})
+	assert.Equal(t, codes.Unavailable, status.Code(err))
+	assert.NotContains(t, s.jobs, d.Hash)
+
+	// When the client retries, the request should be submitted again rather than resuming a job that was never queued.
+	working := common.MustOpenTopic(requests + "-working")
+	sub := common.MustOpenSubscription(requests+"-working", 1)
+	s.mutex.Lock()
+	s.requests = map[string]*pubsub.Topic{defaultRequestQueue: working}
+	s.mutex.Unlock()
+	go s.Execute(req, &fakeStream{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msg, err := sub.Receive(ctx)
+	require.NoError(t, err)
+	submitted := &pb.ExecuteRequest{}
+	require.NoError(t, proto.Unmarshal(msg.Body, submitted))
+	assert.Equal(t, d.Hash, submitted.ActionDigest.Hash)
+}
+
+func TestPubSubOptsHelpShowsEnvVars(t *testing.T) {
+	var opts PubSubOpts
+	var buf bytes.Buffer
+	flags.NewParser(&opts, flags.None).WriteHelp(&buf)
+	assert.Contains(t, buf.String(), "[$API_NUM_POLLERS]")
+	assert.Contains(t, buf.String(), "[$API_SUBSCRIPTION]")
 }
