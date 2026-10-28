@@ -24,8 +24,31 @@ jobs:
           name: logs
           path: |
             plz-out/log
+  test-race:
+    runs-on: ubuntu-latest
+    container:
+      image: thoughtmachine/please-servers:20240711
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: plz-out/gen/third_party/go
+          key: ${{ runner.os }}-race-go-${{ hashFiles('third_party/go/BUILD', 'scripts/Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-race-go-
+      - name: Run tests with race detector
+        run: ./pleasew test --profile ci -o plugin.go.race:true -p -v 2 --exclude //tests/...
+      - name: Archive logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-race
+          path: |
+            plz-out/log
   release:
-    needs: [test]
+    needs: [test, test-race]
     runs-on: ubuntu-latest
     container:
       image: thoughtmachine/please-servers:20240711
