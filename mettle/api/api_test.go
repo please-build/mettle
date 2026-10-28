@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +22,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thought-machine/go-flags"
 	bpb "github.com/thought-machine/please-servers/proto/mettle"
+	"gocloud.dev/gcerrors"
 	"gocloud.dev/pubsub"
+	"gocloud.dev/pubsub/driver"
 	bs "google.golang.org/genproto/googleapis/bytestream"
 	"google.golang.org/genproto/googleapis/longrunning"
 	"google.golang.org/grpc"
@@ -356,10 +360,9 @@ func setupCASServer() string {
 }
 
 func TestGetExecutions(t *testing.T) {
-	port := 9990
 	opts := grpcutil.Opts{
 		Host:      "127.0.0.1",
-		Port:      port,
+		Port:      0,
 		CertFile:  "",
 		TokenFile: "",
 	}
@@ -371,7 +374,7 @@ func TestGetExecutions(t *testing.T) {
 	bpb.RegisterBootstrapServer(s, srv)
 	go s.Serve(lis)
 
-	jobs, err := getExecutions(opts, "127.0.0.1:9990", false)
+	jobs, err := getExecutions(opts, lis.Addr().String(), false)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(jobs))
 	assert.Equal(t, "Unfinished Operation", jobs["1234"].Current.Name)
@@ -780,22 +783,19 @@ func (f *fakeStream) Context() context.Context {
 
 func newTestServer() *server {
 	return &server{
-		jobs:      map[string]*job{},
-		completed: map[string]time.Time{},
+		jobs:        map[string]*job{},
+		completed:   map[string]time.Time{},
+		publishTime: publishTimeFromMetadata,
 	}
 }
 
 // testPublishTimeKey is a metadata key used to tell the server when a message was published, in place of Pub/Sub.
 const testPublishTimeKey = "test_publish_time"
 
-// usePublishTimeFromMetadata makes the server read publish times from message metadata for the duration of a test.
-func usePublishTimeFromMetadata(t *testing.T) {
-	old := publishTime
-	publishTime = func(msg *pubsub.Message) time.Time {
-		published, _ := time.Parse(time.RFC3339Nano, msg.Metadata[testPublishTimeKey])
-		return published
-	}
-	t.Cleanup(func() { publishTime = old })
+// publishTimeFromMetadata reads the publish time of a message from its metadata.
+func publishTimeFromMetadata(msg *pubsub.Message) time.Time {
+	published, _ := time.Parse(time.RFC3339Nano, msg.Metadata[testPublishTimeKey])
+	return published
 }
 
 // progressMessage returns a message from the response queue updating the given action to the given stage.
@@ -818,7 +818,6 @@ func progressMessage(hash string, stage pb.ExecutionStage_Value, published time.
 }
 
 func TestStaleMessagesDoNotRecreateCompletedJobs(t *testing.T) {
-	usePublishTimeFromMetadata(t)
 	s := newTestServer()
 	const hash = uncachedHash
 	completed := time.Now()
@@ -861,6 +860,87 @@ func TestCompletionsAreForgottenAfterRetentionTime(t *testing.T) {
 	assert.Contains(t, s.completed, "new")
 }
 
+// sentLog records the names of the topics that messages were sent to, in order.
+type sentLog struct {
+	mutex sync.Mutex
+	sent  []string
+}
+
+func (l *sentLog) Sent() []string {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	return append([]string{}, l.sent...)
+}
+
+// recordingTopic is a topic driver that records messages to a log shared with other topics.
+type recordingTopic struct {
+	name string
+	log  *sentLog
+	// onSend, if set, is called before each send; if it returns an error the send fails.
+	onSend func() error
+}
+
+func (t *recordingTopic) SendBatch(ctx context.Context, ms []*driver.Message) error {
+	if t.onSend != nil {
+		if err := t.onSend(); err != nil {
+			return err
+		}
+	}
+	t.log.mutex.Lock()
+	defer t.log.mutex.Unlock()
+	for range ms {
+		t.log.sent = append(t.log.sent, t.name)
+	}
+	return nil
+}
+
+func (t *recordingTopic) IsRetryable(err error) bool             { return false }
+func (t *recordingTopic) As(i any) bool                          { return false }
+func (t *recordingTopic) ErrorAs(err error, i any) bool          { return false }
+func (t *recordingTopic) ErrorCode(err error) gcerrors.ErrorCode { return gcerrors.Unknown }
+func (t *recordingTopic) Close() error                           { return nil }
+
+// newRecordingServer returns a server whose request & pre-response topics record to the returned log.
+// The given function is called before each request is sent.
+func newRecordingServer(t *testing.T, onRequest func() error) (*server, *sentLog) {
+	client, err := rexclient.New("test", setupCASServer(), false, "")
+	require.NoError(t, err)
+	l := &sentLog{}
+	s := newTestServer()
+	s.client = client
+	s.requests = map[string]*pubsub.Topic{defaultRequestQueue: pubsub.NewTopic(&recordingTopic{name: "request", log: l, onSend: onRequest}, nil)}
+	s.preResponses = pubsub.NewTopic(&recordingTopic{name: "pre-response", log: l}, nil)
+	return s, l
+}
+
+// goExecute runs Execute in the background and returns a channel that receives its result.
+func goExecute(s *server, req *pb.ExecuteRequest) <-chan error {
+	ch := make(chan error, 1)
+	go func() { ch <- s.Execute(req, &fakeStream{}) }()
+	return ch
+}
+
+// waitForResult waits for a result from the given channel, failing the test if one doesn't arrive in time.
+func waitForResult(t *testing.T, ch <-chan error) error {
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "Timed out waiting for stream to end")
+		return nil
+	}
+}
+
+// numStreams returns the number of streams registered for the given job, or -1 if it doesn't exist.
+func (s *server) numStreams(hash string) int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if j, present := s.jobs[hash]; present {
+		return len(j.Streams)
+	}
+	return -1
+}
+
 func TestAbandonedJobEndsStreams(t *testing.T) {
 	s := newTestServer()
 	d := &pb.Digest{Hash: uncachedHash}
@@ -873,43 +953,137 @@ func TestAbandonedJobEndsStreams(t *testing.T) {
 	assert.NotContains(t, s.jobs, d.Hash)
 
 	// The client waiting on it should get an error so it retries, rather than waiting forever.
-	err := s.streamEvents(d, ch, &fakeStream{})
-	assert.Equal(t, codes.Unavailable, status.Code(err))
+	result := make(chan error, 1)
+	go func() { result <- s.streamEvents(d, ch, &fakeStream{}) }()
+	assert.Equal(t, codes.Unavailable, status.Code(waitForResult(t, result)))
 }
 
 func TestFailedSubmissionDoesNotLeaveJobBehind(t *testing.T) {
-	client, err := rexclient.New("test", setupCASServer(), false, "")
-	require.NoError(t, err)
+	var fail atomic.Bool
+	fail.Store(true)
+	s, l := newRecordingServer(t, func() error {
+		if fail.Load() {
+			return fmt.Errorf("request topic unavailable")
+		}
+		return nil
+	})
 	d := registerAction(t)
-	requests := fmt.Sprintf("mem://failing-requests-%d", queueID)
-	responses := fmt.Sprintf("mem://failing-responses-%d", queueID)
-	queueID++
-	failing := common.MustOpenTopic(requests)
-	require.NoError(t, failing.Shutdown(context.Background()))
-	s := newTestServer()
-	s.client = client
-	s.requests = map[string]*pubsub.Topic{defaultRequestQueue: failing}
-	s.preResponses = common.MustOpenTopic(responses)
-
 	req := &pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}
-	err = s.Execute(req, &fakeStream{})
+
+	err := s.Execute(req, &fakeStream{})
 	assert.Equal(t, codes.Unavailable, status.Code(err))
 	assert.NotContains(t, s.jobs, d.Hash)
+	// Nobody else should be told it's queued.
+	assert.Empty(t, l.Sent())
 
 	// When the client retries, the request should be submitted again rather than resuming a job that was never queued.
-	working := common.MustOpenTopic(requests + "-working")
-	sub := common.MustOpenSubscription(requests+"-working", 1)
-	s.mutex.Lock()
-	s.requests = map[string]*pubsub.Topic{defaultRequestQueue: working}
-	s.mutex.Unlock()
-	go s.Execute(req, &fakeStream{})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := sub.Receive(ctx)
-	require.NoError(t, err)
-	submitted := &pb.ExecuteRequest{}
-	require.NoError(t, proto.Unmarshal(msg.Body, submitted))
-	assert.Equal(t, d.Hash, submitted.ActionDigest.Hash)
+	fail.Store(false)
+	goExecute(s, req)
+	assert.Eventually(t, func() bool { return len(l.Sent()) == 2 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"request", "pre-response"}, l.Sent())
+}
+
+func TestResumingClientIsEndedWhenSubmissionFails(t *testing.T) {
+	release := make(chan struct{})
+	s, l := newRecordingServer(t, func() error {
+		<-release
+		return fmt.Errorf("request topic unavailable")
+	})
+	d := registerAction(t)
+	req := &pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}
+
+	// The first client creates the job and blocks submitting it.
+	first := goExecute(s, req)
+	require.Eventually(t, func() bool { return s.numStreams(d.Hash) == 1 }, 5*time.Second, 10*time.Millisecond)
+	// A second client arrives and resumes the job while that's ongoing.
+	second := goExecute(s, req)
+	require.Eventually(t, func() bool { return s.numStreams(d.Hash) == 2 }, 5*time.Second, 10*time.Millisecond)
+
+	close(release)
+	assert.Equal(t, codes.Unavailable, status.Code(waitForResult(t, first)))
+	assert.Equal(t, codes.Unavailable, status.Code(waitForResult(t, second)))
+	assert.NotContains(t, s.jobs, d.Hash)
+	assert.Empty(t, l.Sent())
+}
+
+// TestConcurrentExecutionsAndCleanup exercises Execute, WaitExecution, process and deleteJobs concurrently.
+// It is most useful when run with the race detector.
+func TestConcurrentExecutionsAndCleanup(t *testing.T) {
+	var sends atomic.Int64
+	s, _ := newRecordingServer(t, func() error {
+		if sends.Add(1)%3 == 0 {
+			return fmt.Errorf("request topic unavailable")
+		}
+		return nil
+	})
+	digests := make([]*pb.Digest, 4)
+	for i := range digests {
+		digests[i] = registerAction(t, &pb.Platform_Property{Name: "id", Value: strconv.Itoa(i)})
+	}
+
+	var clients, background sync.WaitGroup
+	for i := range 20 {
+		clients.Add(1)
+		go func() {
+			defer clients.Done()
+			for j := range 10 {
+				d := digests[(i+j)%len(digests)]
+				var err error
+				if j%3 == 2 {
+					err = s.WaitExecution(&pb.WaitExecutionRequest{Name: d.Hash}, &fakeStream{})
+				} else {
+					err = s.Execute(&pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}, &fakeStream{})
+				}
+				if code := status.Code(err); code != codes.OK && code != codes.Unavailable && code != codes.NotFound {
+					t.Errorf("Unexpected error from client: %s", err)
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		clients.Wait()
+		close(done)
+	}()
+	stages := []pb.ExecutionStage_Value{pb.ExecutionStage_QUEUED, pb.ExecutionStage_EXECUTING, pb.ExecutionStage_COMPLETED}
+	background.Add(2)
+	go func() {
+		defer background.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+				s.process(progressMessage(digests[i%len(digests)].Hash, stages[i%len(stages)], time.Now()))
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	go func() {
+		defer background.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+				// Age a job enough that it gets deleted, abandoning it if it's still in progress.
+				s.mutex.Lock()
+				if j, present := s.jobs[digests[i%len(digests)].Hash]; present {
+					j.LastUpdate = time.Now().Add(-3 * expiryTime)
+				}
+				s.mutex.Unlock()
+				s.deleteJobs()
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		require.FailNow(t, "Timed out waiting for clients to finish")
+	}
+	background.Wait()
 }
 
 func TestPubSubOptsHelpShowsEnvVars(t *testing.T) {

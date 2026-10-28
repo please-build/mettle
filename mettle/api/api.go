@@ -53,9 +53,6 @@ var resumptionTime = 10 * time.Minute
 // that Pub/Sub redelivers late. It needs to comfortably exceed the subscription's ack deadline plus its maximum retry backoff.
 const completionRetentionTime = 30 * time.Minute
 
-// publishTime returns the time a message was published. It's a variable so tests can control it.
-var publishTime = common.PublishTime
-
 var totalRequests = prometheus.NewCounter(prometheus.CounterOpts{
 	Namespace: "mettle",
 	Name:      "requests_total",
@@ -241,6 +238,7 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 		preResponses:     common.MustOpenTopic(queueOpts.PreResponseQueue),
 		jobs:             map[string]*job{},
 		completed:        map[string]time.Time{},
+		publishTime:      common.PublishTime,
 		platform:         allowedPlatform,
 		client:           client,
 		numPollers:       queueOpts.NumPollers,
@@ -292,6 +290,7 @@ type server struct {
 	preResponses     *pubsub.Topic
 	jobs             map[string]*job
 	completed        map[string]time.Time // Publish time of the message that last completed each action
+	publishTime      func(*pubsub.Message) time.Time
 	platform         map[string][]string
 	mutex            sync.Mutex
 	numPollers       int
@@ -556,7 +555,13 @@ func (s *server) eventStream(digest *pb.Digest, create bool) (<-chan *longrunnin
 		// This request is resuming an existing stream, give them an update on the latest thing to happen.
 		// This helps avoid 504s from taking too long to send response headers since it can be an arbitrary
 		// amount of time until we receive the next real update.
-		ch <- j.Current
+		// It's a copy since the receiver modifies it.
+		ch <- &longrunning.Operation{
+			Name:     j.Current.Name,
+			Metadata: j.Current.Metadata,
+			Done:     j.Current.Done,
+			Result:   j.Current.Result,
+		}
 	}
 	// Keep this stream if we are going to send further updates on it; don't if
 	// we are resuming an existing job that is already completed (in which case there will
@@ -630,7 +635,7 @@ func (s *server) process(msg *pubsub.Message) {
 	}
 	worker := common.WorkerName(msg)
 	key := metadata.ActionDigest.Hash
-	published := publishTime(msg)
+	published := s.publishTime(msg)
 	if published.IsZero() {
 		published = time.Now()
 	}
