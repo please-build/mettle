@@ -748,9 +748,9 @@ func (s *server) writeBlob(ctx context.Context, prefix string, digest *pb.Digest
 	defer func() {
 		writeLatencies.Observe(time.Since(start).Seconds())
 	}()
-	ctx, cancel := context.WithCancel(ctx)
+	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	w, err := s.bucket.NewWriter(ctx, key, &blob.WriterOptions{BufferSize: s.bufferSize(digest)})
+	w, err := s.bucket.NewWriter(wctx, key, &blob.WriterOptions{BufferSize: s.bufferSize(digest)})
 	if err != nil {
 		return err
 	}
@@ -775,7 +775,8 @@ func (s *server) writeBlob(ctx context.Context, prefix string, digest *pb.Digest
 	}
 	if err := w.Close(); err != nil {
 		cancel()
-		return err
+		// N.B. this uses the original context since we've just cancelled the writer's one.
+		return s.handleRateLimitedWrite(ctx, key, err)
 	}
 	s.markKnownBlob(key)
 	return nil
@@ -798,7 +799,8 @@ func (s *server) writeAll(ctx context.Context, digest *pb.Digest, data []byte, c
 	if actual := hex.EncodeToString(h[:]); actual != digest.Hash {
 		return fmt.Errorf("Rejecting write of %s; actual received digest was %s", digest.Hash, actual)
 	}
-	return s.bucket.WriteAll(ctx, s.compressedKey("cas", digest, compressed), data)
+	key := s.compressedKey("cas", digest, compressed)
+	return s.handleRateLimitedWrite(ctx, key, s.bucket.WriteAll(ctx, key, data))
 }
 
 // bytestreamBlobName returns the digest corresponding to a bytestream resource name

@@ -52,8 +52,7 @@ func (e *elanClient) WriteBlob(b []byte) (*pb.Digest, error) {
 	if e.s.blobExists(ctx, CASPrefix, dg, compressed, false) {
 		return dg, nil
 	}
-	err := e.s.bucket.WriteAll(ctx, key, b)
-	if err != nil {
+	if err := e.s.handleRateLimitedWrite(ctx, key, e.s.bucket.WriteAll(ctx, key, b)); err != nil {
 		return dg, fmt.Errorf("Error writing blob: %w", err)
 	}
 	return dg, nil
@@ -105,7 +104,7 @@ func (e *elanClient) uploadOne(entry *uploadinfo.Entry, compressor pb.Compressor
 		if compressed {
 			entry.Contents = e.s.compressor.EncodeAll(entry.Contents, make([]byte, 0, entry.Digest.Size))
 		}
-		return e.s.bucket.WriteAll(ctx, key, entry.Contents)
+		return e.s.handleRateLimitedWrite(ctx, key, e.s.bucket.WriteAll(ctx, key, entry.Contents))
 	}
 	// OK it's in a file, stream it across.
 	f, err := os.Open(entry.Path)
@@ -124,7 +123,7 @@ func (e *elanClient) uploadOne(entry *uploadinfo.Entry, compressor pb.Compressor
 
 	defer func() {
 		if closeErr := wr.Close(); err == nil {
-			err = closeErr
+			err = e.s.handleRateLimitedWrite(ctx, key, closeErr)
 		}
 	}()
 
