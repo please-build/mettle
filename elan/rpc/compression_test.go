@@ -139,12 +139,12 @@ func testMain(m *testing.M) int {
 	storage := "file://" + os.Getenv("TEST_DIR") + "/elan/rpc"
 	lis, s := startServer(grpcutil.Opts{
 		Host: "127.0.0.1",
-		Port: 7777,
+		Port: 0,
 	}, storage, 5, 1000, 1000, nil, 0)
-	go grpcutil.ServeForever(lis, s)
+	go s.Serve(lis)
 	defer s.Stop()
 
-	conn, err := grpcutil.Dial("127.0.0.1:7777", false, "", "")
+	conn, err := grpcutil.Dial(lis.Addr().String(), false, "", "")
 	if err != nil {
 		log.Fatalf("%s", err)
 	}

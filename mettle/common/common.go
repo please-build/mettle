@@ -128,6 +128,16 @@ func PublishWithOrderingKey(ctx context.Context, topic *pubsub.Topic, body []byt
 	})
 }
 
+// PublishTime returns the time a message was originally published, or the zero time if the driver doesn't record it.
+// Redelivered messages keep their original publish time.
+func PublishTime(msg *pubsub.Message) time.Time {
+	var pm *pspb.PubsubMessage
+	if msg.As(&pm) && pm.PublishTime != nil {
+		return pm.PublishTime.AsTime()
+	}
+	return time.Time{}
+}
+
 // WorkerName returns the name of a worker associated with a message, or the empty string if there isn't one.
 func WorkerName(msg *pubsub.Message) string {
 	if msg.Metadata != nil {

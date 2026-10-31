@@ -37,7 +37,9 @@ go_test(
         "///third_party/go/github.com_stretchr_testify//assert",
         "///third_party/go/github.com_stretchr_testify//require",
         "///third_party/go/github.com_thought-machine_go-flags//:go-flags",
+        "///third_party/go/gocloud.dev//gcerrors",
         "///third_party/go/gocloud.dev//pubsub",
+        "///third_party/go/gocloud.dev//pubsub/driver",
         "///third_party/go/google.golang.org_genproto//googleapis/longrunning",
         "///third_party/go/google.golang.org_genproto_googleapis_bytestream//:bytestream",
         "///third_party/go/google.golang.org_grpc//:grpc",
@@ -46,5 +48,6 @@ go_test(
         "//grpcutil",
         "//mettle/common",
         "//proto/mettle",
+        "//rexclient",
     ],
 )

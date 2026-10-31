@@ -1,3 +1,7 @@
+Version 11.19.1
+---------------
+	* Fix phantom stale tasks across API servers (#368)
+
 Version 11.19.0
 ---------------
     * Add in ability for multiple pubsub subscriptions for different types of
