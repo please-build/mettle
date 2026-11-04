@@ -1,3 +1,7 @@
+Version 11.19.2
+---------------
+	* Elan: size the GCS upload buffer to the blob in WriteAll instead of the default 16 MiB per blob, which could exhaust memory
+
 Version 11.19.1
 ---------------
 	* Fix phantom stale tasks across API servers (#368)
