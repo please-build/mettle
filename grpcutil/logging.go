@@ -3,6 +3,7 @@ package grpcutil
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	cli "github.com/peterebden/go-cli-init/v4/logging"
@@ -73,10 +74,10 @@ func LogUnaryRequests(ctx context.Context, req interface{}, info *grpc.UnaryServ
 	start := time.Now()
 	resp, err := handler(ctx, req)
 	if err != nil {
-		if status.Code(err) != codes.NotFound {
-			log.Error("Error handling %s: %s", info.FullMethod, err)
+		if hasGRPCCode(err, codes.NotFound) {
+			log.Debug("Not found on %s: %v", info.FullMethod, err)
 		} else {
-			log.Debug("Not found on %s: %s", info.FullMethod, err)
+			log.Error("Error handling %s: %v", info.FullMethod, err)
 		}
 	} else {
 		log.Debug("Handled %s successfully in %s", info.FullMethod, time.Since(start))
@@ -89,13 +90,32 @@ func LogStreamRequests(srv interface{}, ss grpc.ServerStream, info *grpc.StreamS
 	start := time.Now()
 	err := handler(srv, ss)
 	if err != nil {
-		if status.Code(err) != codes.NotFound {
-			log.Error("Error handling %s: %s", info.FullMethod, err)
+		if hasGRPCCode(err, codes.NotFound) {
+			log.Debug("Not found on %s: %v", info.FullMethod, err)
 		} else {
-			log.Debug("Not found on %s: %s", info.FullMethod, err)
+			log.Error("Error handling %s: %v", info.FullMethod, err)
 		}
 	} else {
 		log.Debug("Handled %s successfully in %s", info.FullMethod, time.Since(start))
 	}
 	return err
+}
+
+// grpcStatusError is the interface implemented by gRPC status errors.
+type grpcStatusError interface {
+	GRPCStatus() *status.Status
+}
+
+// hasGRPCCode reports whether err or any error in its tree has the given gRPC
+// status code. This handles errors wrapped by multierror or fmt.Errorf("%w")
+// where status.Code() alone would return codes.Unknown.
+func hasGRPCCode(err error, code codes.Code) bool {
+	if status.Code(err) == code {
+		return true
+	}
+	var se grpcStatusError
+	if errors.As(err, &se) {
+		return se.GRPCStatus().Code() == code
+	}
+	return false
 }
