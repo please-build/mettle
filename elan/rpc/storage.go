@@ -8,6 +8,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/klauspost/compress/zstd"
 	"gocloud.dev/blob"
+	"google.golang.org/api/googleapi"
 )
 
 // A bucket is a minimal interface that we need to talk to our backend storage.
@@ -50,7 +51,11 @@ func (a *adapter) NewWriter(ctx context.Context, key string, opts *blob.WriterOp
 }
 
 func (a *adapter) WriteAll(ctx context.Context, key string, data []byte) error {
-	return a.bucket.WriteAll(ctx, key, data, nil)
+	// Without a BufferSize the GCS writer allocates a full upload chunk (16 MiB) per call, however small the data is.
+	// The buffer must be larger than the data: if the data exactly fills it the client cannot see EOF and falls
+	// back to a slower multi-request resumable upload.
+	size := min(len(data)+1, googleapi.DefaultUploadChunkSize)
+	return a.bucket.WriteAll(ctx, key, data, &blob.WriterOptions{BufferSize: size})
 }
 
 func (a *adapter) ReadAll(ctx context.Context, key string) ([]byte, error) {
