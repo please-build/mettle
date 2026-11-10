@@ -381,26 +381,27 @@ func (s *server) notInRedis(ctx context.Context, digests []*pb.Digest) []*pb.Dig
 	found := make([]bool, len(small))
 	var wg sync.WaitGroup
 	for lo := 0; lo < len(small); lo += fmbPipelineSize {
-		hi := min(lo+fmbPipelineSize, len(small))
+		chunk := small[lo:min(lo+fmbPipelineSize, len(small))]
 		wg.Add(1)
-		go func(lo, hi int) {
+		// Each goroutine writes only to its own part of found.
+		go func(chunk []*pb.Digest, found []bool) {
 			defer wg.Done()
-			cmds := make([]*redis.IntCmd, hi-lo)
+			cmds := make([]*redis.IntCmd, len(chunk))
 			if _, err := s.readRedis.Pipelined(ctx, func(p redis.Pipeliner) error {
-				for i := lo; i < hi; i++ {
-					cmds[i-lo] = p.Exists(ctx, small[i].Hash)
+				for i, d := range chunk {
+					cmds[i] = p.Exists(ctx, d.Hash)
 				}
 				return nil
 			}); err != nil {
 				log.Warningf("Failed to check blobs in Redis: %v", err)
 				return
 			}
-			for i := lo; i < hi; i++ {
-				if n, err := cmds[i-lo].Result(); err == nil && n > 0 {
+			for i, cmd := range cmds {
+				if n, err := cmd.Result(); err == nil && n > 0 {
 					found[i] = true
 				}
 			}
-		}(lo, hi)
+		}(chunk, found[lo:lo+len(chunk)])
 	}
 	wg.Wait()
 	for i, d := range small {
