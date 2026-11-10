@@ -311,28 +311,107 @@ func (s *server) UpdateActionResult(ctx context.Context, req *pb.UpdateActionRes
 func (s *server) FindMissingBlobs(ctx context.Context, req *pb.FindMissingBlobsRequest) (*pb.FindMissingBlobsResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp := &pb.FindMissingBlobsResponse{}
-	var wg sync.WaitGroup
-	wg.Add(len(req.BlobDigests))
-	var mutex sync.Mutex
+	var pending []*pb.Digest
 	for _, d := range req.BlobDigests {
 		if len(d.Hash) != 64 {
 			return nil, status.Errorf(codes.InvalidArgument, "Invalid hash '%s'", d.Hash)
-		} else if s.isEmpty(d) {
-			wg.Done()
-			continue // Ignore the empty blob.
 		}
+		if !s.isEmpty(d) && !s.knownBlob(s.compressedKey("cas", d, false)) { // Ignore the empty blob.
+			pending = append(pending, d)
+		}
+	}
+	pending = s.notInRedis(ctx, pending)
+
+	resp := &pb.FindMissingBlobsResponse{}
+	var wg sync.WaitGroup
+	wg.Add(len(pending))
+	var mutex sync.Mutex
+	for _, d := range pending {
 		go func(d *pb.Digest) {
-			if !s.blobExists(ctx, "cas", d, false, true) && !s.blobExists(ctx, "cas", d, true, false) {
+			defer wg.Done()
+			key := s.compressedKey("cas", d, false)
+			if s.blobExistsUncached(ctx, key) {
+				s.markKnownBlob(key)
+			} else if !s.blobExists(ctx, "cas", d, true, false) {
 				mutex.Lock()
 				resp.MissingBlobDigests = append(resp.MissingBlobDigests, d)
 				mutex.Unlock()
 			}
-			wg.Done()
 		}(d)
 	}
 	wg.Wait()
 	return resp, nil
+}
+
+// knownBlob returns true if the in-memory cache knows that the blob exists.
+func (s *server) knownBlob(key string) bool {
+	if s.knownBlobCache == nil {
+		return false
+	}
+	if _, present := s.knownBlobCache.Get(key); present {
+		knownBlobCacheHits.Inc()
+		return true
+	}
+	knownBlobCacheMisses.Inc()
+	return false
+}
+
+// fmbPipelineSize is the number of Redis EXISTS commands that FindMissingBlobs sends in one pipeline.
+// It is big enough that most requests need a single round trip, and small enough that a pipeline keeps
+// the shared, single-threaded Redis busy for well under a millisecond and that a failed pipeline sends
+// only this many digests to the bucket at once.
+const fmbPipelineSize = 256
+
+// notInRedis returns the digests that Redis does not know about, which still have to be checked in the bucket.
+// Blobs too large to be indexed in Redis are returned as they are. The lookups are pipelined, so a request needs
+// one connection and one round trip per fmbPipelineSize digests instead of one per digest. If a pipeline fails
+// its digests are returned as well, so that they go to the bucket, as they would after a failed single lookup.
+func (s *server) notInRedis(ctx context.Context, digests []*pb.Digest) []*pb.Digest {
+	if s.readRedis == nil {
+		return digests
+	}
+	var small, rest []*pb.Digest
+	for _, d := range digests {
+		if d.SizeBytes < s.largeBlobSize {
+			small = append(small, d)
+		} else {
+			rest = append(rest, d)
+		}
+	}
+	found := make([]bool, len(small))
+	var wg sync.WaitGroup
+	for lo := 0; lo < len(small); lo += fmbPipelineSize {
+		chunk := small[lo:min(lo+fmbPipelineSize, len(small))]
+		wg.Add(1)
+		// Each goroutine writes only to its own part of found.
+		go func(chunk []*pb.Digest, found []bool) {
+			defer wg.Done()
+			cmds := make([]*redis.IntCmd, len(chunk))
+			if _, err := s.readRedis.Pipelined(ctx, func(p redis.Pipeliner) error {
+				for i, d := range chunk {
+					cmds[i] = p.Exists(ctx, d.Hash)
+				}
+				return nil
+			}); err != nil {
+				log.Warningf("Failed to check blobs in Redis: %v", err)
+				return
+			}
+			for i, cmd := range cmds {
+				if n, err := cmd.Result(); err == nil && n > 0 {
+					found[i] = true
+				}
+			}
+		}(chunk, found[lo:lo+len(chunk)])
+	}
+	wg.Wait()
+	for i, d := range small {
+		if found[i] {
+			s.markKnownBlob(s.compressedKey("cas", d, false))
+		} else {
+			rest = append(rest, d)
+		}
+	}
+	return rest
 }
 
 // blobExists returns true if this blob exists in the underlying storage.
