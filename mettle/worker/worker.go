@@ -156,17 +156,57 @@ func init() {
 	}
 }
 
+// Opts configures a worker.
+type Opts struct {
+	InstanceName      string
+	RequestQueue      string
+	ResponseQueue     string
+	Name              string // Defaults to the hostname if empty.
+	Storage           string
+	SecureStorage     bool
+	TokenFile         string
+	Dir               string
+	Clean             bool
+	CacheDir          string
+	CachePrefix       []string
+	CacheParts        []string
+	MaxCacheSize      int64
+	BrowserURL        string
+	Sandbox           string
+	AltSandbox        string
+	Lucidity          string
+	PromGatewayURL    string
+	PrimaryRedis      *redis.Client
+	ReadRedis         *redis.Client
+	LargeBlobSize     int64
+	MinDiskSpace      int64
+	MemoryThreshold   float64
+	VersionFile       string
+	Costs             map[string]mettlecli.Currency
+	AckExtension      time.Duration
+	PreflightAction   bool
+	ConnCheck         string
+	ConnCheckPeriod   time.Duration
+	ImmediateShutdown bool
+}
+
 // RunForever runs the worker, receiving jobs until terminated.
-func RunForever(instanceName, requestQueue, responseQueue, name, storage, dir, cacheDir, browserURL, sandbox, altSandbox, lucidity, promGatewayURL, tokenFile string, primaryRedis, readRedis *redis.Client, largeBlobSize int64, cachePrefix, cacheParts []string, clean, preflightAction, secureStorage bool, maxCacheSize, minDiskSpace int64, memoryThreshold float64, connCheck string, connCheckPeriod time.Duration, versionFile string, costs map[string]mettlecli.Currency, ackExtension time.Duration, immediateShutdown bool) {
-	err := runForever(instanceName, requestQueue, responseQueue, name, storage, dir, cacheDir, browserURL, sandbox, altSandbox, lucidity, promGatewayURL, tokenFile, primaryRedis, readRedis, largeBlobSize, cachePrefix, cacheParts, clean, preflightAction, secureStorage, maxCacheSize, minDiskSpace, memoryThreshold, connCheck, connCheckPeriod, versionFile, costs, ackExtension, immediateShutdown)
+func RunForever(opts Opts) {
+	err := runForever(opts)
 	log.Fatalf("Failed to run: %s", err)
 }
 
 // RunOne runs one single request, returning any error received.
-func RunOne(instanceName, name, storage, dir, cacheDir, sandbox, altSandbox, tokenFile string, primaryRedis, readRedis *redis.Client, largeBlobSize int64, cachePrefix, cacheParts []string, clean, secureStorage bool, digest *pb.Digest) error {
+// The queues and resource limits in opts are overridden since only a single local task is run.
+func RunOne(opts Opts, digest *pb.Digest) error {
+	opts.RequestQueue = "mem://requests"
+	opts.ResponseQueue = "mem://responses"
+	opts.MaxCacheSize = 0
+	opts.MinDiskSpace = math.MaxInt64
+	opts.MemoryThreshold = 100.0
 	// Must create this to submit on first
-	topic := common.MustOpenTopic("mem://requests")
-	w, err := initialiseWorker(instanceName, "mem://requests", "mem://responses", name, storage, dir, cacheDir, "", sandbox, altSandbox, "", "", tokenFile, primaryRedis, readRedis, largeBlobSize, cachePrefix, cacheParts, clean, secureStorage, 0, math.MaxInt64, 100.0, "", nil, 0)
+	topic := common.MustOpenTopic(opts.RequestQueue)
+	w, err := initialiseWorker(opts)
 	if err != nil {
 		return err
 	}
@@ -176,7 +216,7 @@ func RunOne(instanceName, name, storage, dir, cacheDir, sandbox, altSandbox, tok
 		"hash": digest.Hash,
 	}).Info("Queuing task")
 	b, _ := proto.Marshal(&pb.ExecuteRequest{
-		InstanceName: instanceName,
+		InstanceName: opts.InstanceName,
 		ActionDigest: digest,
 	})
 	if err := topic.Send(context.Background(), &pubsub.Message{Body: b}); err != nil {
@@ -199,14 +239,14 @@ func RunOne(instanceName, name, storage, dir, cacheDir, sandbox, altSandbox, tok
 	return nil
 }
 
-func runForever(instanceName, requestQueue, responseQueue, name, storage, dir, cacheDir, browserURL, sandbox, altSandbox, lucidity, promGatewayURL, tokenFile string, primaryRedis, readRedis *redis.Client, largeBlobSize int64, cachePrefix, cacheParts []string, clean, preflightAction, secureStorage bool, maxCacheSize, minDiskSpace int64, memoryThreshold float64, connCheck string, connCheckPeriod time.Duration, versionFile string, costs map[string]mettlecli.Currency, ackExtension time.Duration, immediateShutdown bool) error {
-	w, err := initialiseWorker(instanceName, requestQueue, responseQueue, name, storage, dir, cacheDir, browserURL, sandbox, altSandbox, lucidity, promGatewayURL, tokenFile, primaryRedis, readRedis, largeBlobSize, cachePrefix, cacheParts, clean, secureStorage, maxCacheSize, minDiskSpace, memoryThreshold, versionFile, costs, ackExtension)
+func runForever(opts Opts) error {
+	w, err := initialiseWorker(opts)
 	if err != nil {
 		return err
 	}
 	defer w.ShutdownQueues()
 
-	if preflightAction {
+	if opts.PreflightAction {
 		if err := w.runPreflightAction(); err != nil {
 			return err
 		}
@@ -217,7 +257,7 @@ func runForever(instanceName, requestQueue, responseQueue, name, storage, dir, c
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		sig := <-ch
-		if immediateShutdown {
+		if opts.ImmediateShutdown {
 			w.forceShutdown(fmt.Sprintf("Received shutdown signal %s, shutting down...", sig))
 		}
 		log.Warning("Received signal %s, shutting down when any in-progress task completes or times out", sig)
@@ -232,10 +272,10 @@ func runForever(instanceName, requestQueue, responseQueue, name, storage, dir, c
 			}
 		}
 	}()
-	w.checkConnectivity(connCheck)
+	w.checkConnectivity(opts.ConnCheck)
 	go w.periodicallyPushMetrics()
 	defer w.metricTicker.Stop()
-	t := time.NewTicker(connCheckPeriod)
+	t := time.NewTicker(opts.ConnCheckPeriod)
 	defer t.Stop()
 	for {
 		w.waitForFreeResources()
@@ -245,7 +285,7 @@ func runForever(instanceName, requestQueue, responseQueue, name, storage, dir, c
 		// Run the connectivity check if the period has expired
 		select {
 		case <-t.C:
-			w.checkConnectivity(connCheck)
+			w.checkConnectivity(opts.ConnCheck)
 		default:
 		}
 
@@ -270,46 +310,46 @@ func runForever(instanceName, requestQueue, responseQueue, name, storage, dir, c
 	}
 }
 
-func initialiseWorker(instanceName, requestQueue, responseQueue, name, storage, dir, cacheDir, browserURL, sandbox, altSandbox, lucidity, promGatewayURL, tokenFile string, primaryRedis, readRedis *redis.Client, largeBlobSize int64, cachePrefix, cacheParts []string, clean, secureStorage bool, maxCacheSize, minDiskSpace int64, memoryThreshold float64, versionFile string, costs map[string]mettlecli.Currency, ackExtension time.Duration) (*worker, error) {
+func initialiseWorker(opts Opts) (*worker, error) {
 	// Make sure we have a directory to run in
-	if err := os.MkdirAll(dir, os.ModeDir|0755); err != nil {
+	if err := os.MkdirAll(opts.Dir, os.ModeDir|0755); err != nil {
 		return nil, fmt.Errorf("Failed to create working directory: %s", err)
 	}
-	if cacheDir != "" && (len(cachePrefix) > 0 || len(cacheParts) > 0) {
+	if opts.CacheDir != "" && (len(opts.CachePrefix) > 0 || len(opts.CacheParts) > 0) {
 		// If we're gonna be copying to the cache dir we should make sure it exists first.
-		if err := os.MkdirAll(cacheDir, os.ModeDir|0755); err != nil {
+		if err := os.MkdirAll(opts.CacheDir, os.ModeDir|0755); err != nil {
 			return nil, fmt.Errorf("Failed to create cache directory: %s", err)
 		}
 	}
 	// Remove anything existing within this directory.
 	// We don't just do a RemoveAll above in case we don't have permissions to create it in the first place.
-	if clean {
-		files, err := ioutil.ReadDir(dir)
+	if opts.Clean {
+		files, err := ioutil.ReadDir(opts.Dir)
 		if err != nil {
 			return nil, err // If we can't even list the directory, may as well bomb out now.
 		}
 		for _, file := range files {
-			if err := os.RemoveAll(path.Join(dir, file.Name())); err != nil {
+			if err := os.RemoveAll(path.Join(opts.Dir, file.Name())); err != nil {
 				log.Warning("Failed to remove existing work directory: %s", err)
 			}
 		}
 	}
 	// If no name is given, default to the hostname.
-	if name == "" {
+	if opts.Name == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
 			return nil, fmt.Errorf("Failed to determine hostname, must pass --name explicitly: %s", err)
 		}
-		name = hostname
-		log.Notice("This is %s", name)
+		opts.Name = hostname
+		log.Notice("This is %s", opts.Name)
 	}
 	// Check this exists upfront
-	if sandbox != "" {
-		if _, err := os.Stat(sandbox); err != nil {
+	if opts.Sandbox != "" {
+		if _, err := os.Stat(opts.Sandbox); err != nil {
 			return nil, fmt.Errorf("Error checking sandbox tool: %s", err)
 		}
 	}
-	client, err := elan.New(storage, secureStorage, tokenFile)
+	client, err := elan.New(opts.Storage, opts.SecureStorage, opts.TokenFile)
 	if err != nil {
 		return nil, err
 	}
@@ -318,50 +358,50 @@ func initialiseWorker(instanceName, requestQueue, responseQueue, name, storage, 
 	if err != nil {
 		return nil, err
 	}
-	abspath, err := filepath.Abs(dir)
+	abspath, err := filepath.Abs(opts.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to make path absolute: %s", err)
 	}
 
 	w := &worker{
-		requests:        common.MustOpenSubscription(requestQueue, 1),
-		responses:       common.MustOpenTopic(responseQueue),
-		ackExtension:    ackExtension,
+		requests:        common.MustOpenSubscription(opts.RequestQueue, 1),
+		responses:       common.MustOpenTopic(opts.ResponseQueue),
+		ackExtension:    opts.AckExtension,
 		client:          client,
 		rclient:         rexclient.Uninitialised(),
 		rootDir:         abspath,
-		clean:           clean,
+		clean:           opts.Clean,
 		home:            home,
-		name:            name,
-		sandbox:         mustAbs(sandbox),
-		altSandbox:      mustAbs(altSandbox),
+		name:            opts.Name,
+		sandbox:         mustAbs(opts.Sandbox),
+		altSandbox:      mustAbs(opts.AltSandbox),
 		limiter:         make(chan struct{}, downloadParallelism),
 		iolimiter:       make(chan struct{}, ioParallelism),
-		browserURL:      browserURL,
-		promGatewayURL:  promGatewayURL,
+		browserURL:      opts.BrowserURL,
+		promGatewayURL:  opts.PromGatewayURL,
 		startTime:       time.Now(),
-		diskSpace:       minDiskSpace,
-		memoryThreshold: memoryThreshold,
-		instanceName:    instanceName,
+		diskSpace:       opts.MinDiskSpace,
+		memoryThreshold: opts.MemoryThreshold,
+		instanceName:    opts.InstanceName,
 		costs:           map[string]*bbru.MonetaryResourceUsage_Expense{},
 		metricTicker:    time.NewTicker(5 * time.Minute),
 	}
-	if primaryRedis != nil {
-		w.client = newRedisClient(client, primaryRedis, readRedis, largeBlobSize)
+	if opts.PrimaryRedis != nil {
+		w.client = newRedisClient(client, opts.PrimaryRedis, opts.ReadRedis, opts.LargeBlobSize)
 	}
-	if ackExtension > 0 {
-		if !strings.HasPrefix(requestQueue, "gcppubsub://") {
-			return nil, fmt.Errorf("Cannot specify a non-zero ack extension on subscription %s", requestQueue)
+	if opts.AckExtension > 0 {
+		if !strings.HasPrefix(opts.RequestQueue, "gcppubsub://") {
+			return nil, fmt.Errorf("Cannot specify a non-zero ack extension on subscription %s", opts.RequestQueue)
 		}
-		w.ackExtensionSub = strings.TrimPrefix(requestQueue, "gcppubsub://")
+		w.ackExtensionSub = strings.TrimPrefix(opts.RequestQueue, "gcppubsub://")
 	}
-	if cacheDir != "" {
-		w.fileCache = newCache(cacheDir, cachePrefix, cacheParts)
+	if opts.CacheDir != "" {
+		w.fileCache = newCache(opts.CacheDir, opts.CachePrefix, opts.CacheParts)
 	}
-	if maxCacheSize > 0 {
+	if opts.MaxCacheSize > 0 {
 		c, err := ristretto.NewCache(&ristretto.Config{
-			NumCounters: maxCacheSize / 10, // bit of a guess
-			MaxCost:     maxCacheSize,
+			NumCounters: opts.MaxCacheSize / 10, // bit of a guess
+			MaxCost:     opts.MaxCacheSize,
 			BufferItems: 64, // recommended by upstream
 		})
 		if err != nil {
@@ -370,24 +410,24 @@ func initialiseWorker(instanceName, requestQueue, responseQueue, name, storage, 
 		w.cache = c
 	}
 	// Load the version file if given
-	if versionFile != "" {
-		if b, err := os.ReadFile(versionFile); err != nil {
+	if opts.VersionFile != "" {
+		if b, err := os.ReadFile(opts.VersionFile); err != nil {
 			log.Errorf("Failed to read version file: %s", err)
 		} else {
 			w.version = strings.TrimSpace(string(b))
 		}
 	}
-	if lucidity != "" {
+	if opts.Lucidity != "" {
 		w.lucidChan = make(chan *lpb.Worker, 100)
 		log.Notice("Dialling Lucidity...")
-		conn, err := grpcutil.Dial(lucidity, true, "", tokenFile) // CA is currently not configurable.
+		conn, err := grpcutil.Dial(opts.Lucidity, true, "", opts.TokenFile) // CA is currently not configurable.
 		if err != nil {
 			return nil, fmt.Errorf("Failed to dial Lucidity server: %s", err)
 		}
 		w.lucidity = lpb.NewLucidityClient(conn)
 		go w.sendReports()
 	}
-	for name, cost := range costs {
+	for name, cost := range opts.Costs {
 		w.costs[name] = &bbru.MonetaryResourceUsage_Expense{Currency: cost.Denomination, Cost: cost.Amount}
 	}
 
@@ -395,7 +435,7 @@ func initialiseWorker(instanceName, requestQueue, responseQueue, name, storage, 
 	currentBuilds.WithLabelValues(w.instanceName).Add(0)
 	blobNotFoundErrors.WithLabelValues(w.version).Add(0)
 
-	log.Notice("%s initialised with settings: CAS: %s cache dir: %s max cache size: %d sandbox: %s alt sandbox: %s", name, storage, cacheDir, maxCacheSize, w.sandbox, w.altSandbox)
+	log.Notice("%s initialised with settings: CAS: %s cache dir: %s max cache size: %d sandbox: %s alt sandbox: %s", opts.Name, opts.Storage, opts.CacheDir, opts.MaxCacheSize, w.sandbox, w.altSandbox)
 	return w, nil
 }
 
