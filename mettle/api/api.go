@@ -153,9 +153,21 @@ type PubSubOpts struct {
 	SubscriptionBatchSize uint              `long:"subscription_batch_size" env:"API_SUBSCRIPTION" default:"100" description:"Maximum number of messages to fetch from the response subscription in a single pull"`
 }
 
+// Opts configures the API server.
+type Opts struct {
+	GRPC            grpcutil.Opts
+	Name            string // Defaults to "mettle API server" if empty.
+	Queues          PubSubOpts
+	APIURL          string // Another API server to fetch inflight executions from on startup.
+	APITLS          bool
+	AllowedPlatform map[string][]string
+	StorageURL      string
+	StorageTLS      bool
+}
+
 // ServeForever serves on the given port until terminated.
-func ServeForever(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string, connTLS bool, allowedPlatform map[string][]string, storageURL string, storageTLS bool) {
-	s, lis, err := serve(opts, name, queueOpts, apiURL, connTLS, allowedPlatform, storageURL, storageTLS)
+func ServeForever(opts Opts) {
+	s, lis, err := serve(opts)
 	if err != nil {
 		log.Fatalf("Failed to start API server: %s", err)
 	}
@@ -191,10 +203,13 @@ func mergeRequestQueues(requestQueue string, extraRequestQueues map[string]strin
 	return urls, nil
 }
 
-func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string, connTLS bool, allowedPlatform map[string][]string, storageURL string, storageTLS bool) (*grpc.Server, net.Listener, error) {
+func serve(opts Opts) (*grpc.Server, net.Listener, error) {
+	name := opts.Name
 	if name == "" {
 		name = "mettle API server"
 	}
+	queueOpts := opts.Queues
+	allowedPlatform := opts.AllowedPlatform
 
 	// Validate the queue configuration up front so that misconfiguration fails fast, before we open any connections.
 	requestURLs, err := mergeRequestQueues(queueOpts.RequestQueue, queueOpts.ExtraRequestQueues)
@@ -205,8 +220,8 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 		return nil, nil, fmt.Errorf("num_pollers must be greater than 1, got: %d", queueOpts.NumPollers)
 	}
 
-	log.Notice("Contacting CAS server on %s...", storageURL)
-	client, err := rexclient.New(name, storageURL, storageTLS, "")
+	log.Notice("Contacting CAS server on %s...", opts.StorageURL)
+	client, err := rexclient.New(name, opts.StorageURL, opts.StorageTLS, "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -265,7 +280,7 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 		log.Notice("    %s: %s", k, strings.Join(v, ", "))
 	}
 
-	if jobs, err := getExecutions(opts, apiURL, connTLS); err != nil {
+	if jobs, err := getExecutions(opts.GRPC, opts.APIURL, opts.APITLS); err != nil {
 		log.Warningf("Failed to get inflight executions: %s", err)
 	} else if len(jobs) > 0 {
 		srv.jobs = jobs
@@ -274,7 +289,7 @@ func serve(opts grpcutil.Opts, name string, queueOpts PubSubOpts, apiURL string,
 	go srv.Receive()
 	go srv.periodicallyDeleteJobs()
 
-	lis, s := grpcutil.NewServer(opts)
+	lis, s := grpcutil.NewServer(opts.GRPC)
 	pb.RegisterCapabilitiesServer(s, srv)
 	pb.RegisterExecutionServer(s, srv)
 	bpb.RegisterBootstrapServer(s, srv)
