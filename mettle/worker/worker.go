@@ -439,6 +439,7 @@ type worker struct {
 	fileDownload    time.Duration
 	lastURL         string // This is reset somewhat lazily.
 	stdout, stderr  bytes.Buffer
+	memSample       *cgroupMemSample // nil if the cgroup couldn't be sampled
 
 	// For limiting parallelism during download / write actions
 	limiter, iolimiter chan struct{}
@@ -824,6 +825,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		"hash": w.actionDigest.Hash,
 	}).Info("Uploading outputs")
 	w.observeSysUsage(cmd, execDuration)
+	w.observeCgroupMemory()
 	if err != nil {
 		log.Debug("Execution failed.\nStdout: %s\nStderr: %s", w.stdout.String(), w.stderr.String())
 		msg := "Execution failed for " + w.actionDigest.Hash + ": " + err.Error()
@@ -941,6 +943,7 @@ func containsAllOutputPaths(cmd *pb.Command, ar *pb.ActionResult) bool {
 func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
 	w.stdout.Reset()
 	w.stderr.Reset()
+	w.memSample = nil
 
 	cmd.Stdout = &w.stdout
 	cmd.Stderr = &w.stderr
@@ -962,11 +965,14 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		return err
 	}
 
+	sampler := newCgroupSampler(memoryCgroupDir())
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	stopSampling := sampler.start()
 
 	err := cmd.Wait()
+	w.memSample = stopSampling()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
@@ -1092,7 +1098,7 @@ func (w *worker) observeSysUsage(cmd *exec.Cmd, execDuration float64) {
 		return
 	}
 	rusage := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-	peakMemory.Observe(float64(rusage.Maxrss) / 1024.0) // maxrss is in kb, we use mb for convenience
+	peakMemory.Observe(w.peakMemoryMB(rusage))
 	ssec, snsec := rusage.Stime.Unix()
 	usec, unsec := rusage.Utime.Unix()
 	cpuUsage.Observe((float64(ssec+usec) + float64(snsec+unsec)/1000000000) / execDuration)

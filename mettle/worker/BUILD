@@ -49,7 +49,10 @@ go_library(
 
 go_test(
     name = "worker_test",
-    srcs = ["outputs_test.go"],
+    srcs = [
+        "cgroup_test.go",
+        "outputs_test.go",
+    ],
     deps = [
         ":worker",
         "///third_party/go/github.com_bazelbuild_remote-apis-sdks//go/pkg/command",
