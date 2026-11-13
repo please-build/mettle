@@ -4,18 +4,44 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 )
 
 // cgroupSampleInterval is how often memory is sampled while an action runs. A sample reads two small files, which
-// takes about 15 microseconds, and an action that ends before the first sample reports no rise.
-var cgroupSampleInterval = 25 * time.Millisecond
+// takes about 15 microseconds, so this costs about 0.15% of a core. The first sample is one interval after the action
+// starts, so an action that ends sooner than that reports no rise.
+var cgroupSampleInterval = 10 * time.Millisecond
+
+var cgroupPeakAnon = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Namespace: "mettle",
+	Name:      "cgroup_peak_anon_rise_mb",
+	Help:      "Peak rise in anonymous memory of the worker's cgroup while an action ran",
+	Buckets:   []float64{50, 200, 500, 1000, 2000, 3000, 4000, 6000, 8000, 12000, 16000, 32000},
+})
+var cgroupPeakWorkingSet = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Namespace: "mettle",
+	Name:      "cgroup_peak_working_set_mb",
+	Help:      "Peak working set (memory.current minus inactive file cache) of the worker's cgroup while an action ran",
+	Buckets:   []float64{200, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000},
+})
+var cgroupMaxEvents = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: "mettle",
+	Name:      "cgroup_memory_max_events_total",
+	Help:      "Times the worker's cgroup hit memory.max while an action ran",
+})
+var cgroupOOMKills = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: "mettle",
+	Name:      "cgroup_oom_kills_total",
+	Help:      "Processes in the worker's cgroup killed by the OOM killer while an action ran",
+})
 
 // memoryCgroupDir is the directory of this process's cgroup v2 memory files, or "" if unavailable.
 var memoryCgroupDir = sync.OnceValue(func() string {
@@ -59,6 +85,10 @@ func (s cgroupSnapshot) workingSet() int64 {
 
 // cgroupMemSample is the memory behaviour of the worker's cgroup over one action.
 // The worker runs one action at a time, so this is the action's memory plus the worker's own.
+// The rise therefore also includes anything the worker allocates for the action, such as buffered stdout and stderr,
+// and is lowered by the worker's own frees, such as the Go GC releasing earlier garbage mid-action.
+// memoryRiseBytes leaves out kernel memory (page tables, kernel stacks, slab) that counts towards memory.max;
+// peakWSBytes and maxEventsDelta show when that matters.
 type cgroupMemSample struct {
 	limitBytes      int64 // 0 if the cgroup has no limit
 	baselineWSBytes int64
@@ -87,11 +117,8 @@ func readCgroupMemory(dir string) (cgroupSnapshot, error) {
 	if err != nil {
 		return s, err
 	}
-	err = parseKeyed(string(stat), map[string]*int64{
-		"anon":          &s.anon,
-		"shmem":         &s.shmem,
-		"inactive_file": &s.inactiveFile,
-	})
+	vals, err := parseKeyed(string(stat), "anon", "shmem", "inactive_file")
+	s.anon, s.shmem, s.inactiveFile = vals["anon"], vals["shmem"], vals["inactive_file"]
 	return s, err
 }
 
@@ -101,8 +128,8 @@ func readCgroupEvents(dir string) (maxEvents, oomKill int64, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	err = parseKeyed(string(b), map[string]*int64{"max": &maxEvents, "oom_kill": &oomKill})
-	return maxEvents, oomKill, err
+	vals, err := parseKeyed(string(b), "max", "oom_kill")
+	return vals["max"], vals["oom_kill"], err
 }
 
 // readCgroupLimit returns memory.max, or 0 if there is no limit or it can't be read.
@@ -118,22 +145,21 @@ func readCgroupLimit(dir string) int64 {
 	return limit
 }
 
-// parseKeyed parses "key value" lines, storing the values of the wanted keys.
-func parseKeyed(data string, want map[string]*int64) error {
-	for _, line := range strings.Split(data, "\n") {
+// parseKeyed parses "key value" lines and returns the values of the wanted keys that are present.
+func parseKeyed(data string, keys ...string) (map[string]int64, error) {
+	vals := make(map[string]int64, len(keys))
+	for line := range strings.SplitSeq(data, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) != 2 || !slices.Contains(keys, fields[0]) {
 			continue
 		}
-		if dst, ok := want[fields[0]]; ok {
-			v, err := strconv.ParseInt(fields[1], 10, 64)
-			if err != nil {
-				return fmt.Errorf("bad value for %s: %w", fields[0], err)
-			}
-			*dst = v
+		v, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("bad value for %s: %w", fields[0], err)
 		}
+		vals[fields[0]] = v
 	}
-	return nil
+	return vals, nil
 }
 
 // cgroupSampler measures a cgroup's memory over one action.
@@ -226,13 +252,18 @@ func (s *cgroupMemSample) memoryRiseBytes() int64 {
 	return max(s.peakAnonShmemBytes-s.baselineAnonShmem, 0)
 }
 
-// peakMemoryMB returns the memory the action used, in MB. That is the rise in the cgroup's anonymous and shared
+// peakMemoryBytes returns the memory the action used. That is the rise in the cgroup's anonymous and shared
 // memory, or the largest process's maxrss if the cgroup couldn't be sampled.
-func (w *worker) peakMemoryMB(rusage *syscall.Rusage) float64 {
+func (w *worker) peakMemoryBytes(rusage *syscall.Rusage) int64 {
 	if s := w.memSample; s != nil {
-		return float64(s.memoryRiseBytes()) / mb
+		return s.memoryRiseBytes()
 	}
-	return float64(rusage.Maxrss) / 1024.0 // maxrss is in kb
+	return rusage.Maxrss * maximumResidentSetSizeUnit
+}
+
+// peakMemoryMB is peakMemoryBytes in MB.
+func (w *worker) peakMemoryMB(rusage *syscall.Rusage) float64 {
+	return float64(w.peakMemoryBytes(rusage)) / mb
 }
 
 // observeCgroupMemory records the memory sampled for the action that just ran.
@@ -242,6 +273,10 @@ func (w *worker) observeCgroupMemory() {
 		return
 	}
 	anonRise := s.anonRiseBytes()
+	cgroupPeakAnon.Observe(float64(anonRise) / mb)
+	cgroupPeakWorkingSet.Observe(float64(s.peakWSBytes) / mb)
+	cgroupMaxEvents.Add(float64(max(s.maxEventsDelta, 0)))
+	cgroupOOMKills.Add(float64(max(s.oomKillDelta, 0)))
 	logr.WithFields(logrus.Fields{
 		"hash":           w.actionDigest.GetHash(),
 		"stage":          "cgroup_memory",

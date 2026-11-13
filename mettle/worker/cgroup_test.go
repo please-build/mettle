@@ -84,6 +84,10 @@ func TestResolveCgroupDir(t *testing.T) {
 	require.NoError(t, os.WriteFile(proc, []byte("4:memory:/kubepods/pod1\n"), 0644))
 	assert.Equal(t, "", resolveCgroupDir(root, proc))
 
+	// Hybrid hosts list the v1 controllers as well; only the "0::" line is used.
+	require.NoError(t, os.WriteFile(proc, []byte("4:memory:/elsewhere\n0::/kubepods/pod1\n"), 0644))
+	assert.Equal(t, nested, resolveCgroupDir(root, proc))
+
 	assert.Equal(t, "", resolveCgroupDir(root, filepath.Join(root, "missing")))
 }
 
@@ -170,10 +174,12 @@ func TestPeakMemoryMB(t *testing.T) {
 		peakAnonShmemBytes: 612 * mb,
 	}}
 	assert.EqualValues(t, 512, w.peakMemoryMB(rusage), "rise in anonymous and shared memory over the baseline")
+	assert.EqualValues(t, 512*mb, w.peakMemoryBytes(rusage))
 
 	w.memSample = &cgroupMemSample{baselineAnonShmem: 100 * mb, peakAnonShmemBytes: 50 * mb}
 	assert.EqualValues(t, 0, w.peakMemoryMB(rusage), "never negative")
 
 	w.memSample = nil
 	assert.EqualValues(t, 3, w.peakMemoryMB(rusage), "falls back to maxrss")
+	assert.EqualValues(t, 3*mb, w.peakMemoryBytes(rusage))
 }

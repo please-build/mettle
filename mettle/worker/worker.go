@@ -148,6 +148,10 @@ var metrics = []prometheus.Collector{
 	collectOutputErrors,
 	nackedMessages,
 	actionTimeout,
+	cgroupPeakAnon,
+	cgroupPeakWorkingSet,
+	cgroupMaxEvents,
+	cgroupOOMKills,
 }
 
 func init() {
@@ -1106,7 +1110,7 @@ func (w *worker) observeSysUsage(cmd *exec.Cmd, execDuration float64) {
 	any, err := ptypes.MarshalAny(&bbru.POSIXResourceUsage{
 		UserTime:                   toDuration(rusage.Utime),
 		SystemTime:                 toDuration(rusage.Stime),
-		MaximumResidentSetSize:     rusage.Maxrss * maximumResidentSetSizeUnit,
+		MaximumResidentSetSize:     w.peakMemoryBytes(rusage),
 		PageReclaims:               rusage.Minflt,
 		PageFaults:                 rusage.Majflt,
 		Swaps:                      rusage.Nswap,
