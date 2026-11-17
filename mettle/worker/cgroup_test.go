@@ -19,8 +19,12 @@ func writeCgroup(t *testing.T, dir string, current, anon, shmem, inactiveFile, m
 		"memory.stat":    "anon " + itoa(anon) + "\nfile 1\nshmem " + itoa(shmem) + "\ninactive_file " + itoa(inactiveFile) + "\n",
 		"memory.events":  "low 0\nhigh 0\nmax " + itoa(maxEvents) + "\noom 0\noom_kill " + itoa(oomKill) + "\n",
 	}
+	// Rename into place so a sampler running concurrently never reads a truncated or half-written file,
+	// which the kernel's generated files can't produce.
 	for name, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0644))
+		tmp := filepath.Join(t.TempDir(), name)
+		require.NoError(t, os.WriteFile(tmp, []byte(content), 0644))
+		require.NoError(t, os.Rename(tmp, filepath.Join(dir, name)))
 	}
 }
 
