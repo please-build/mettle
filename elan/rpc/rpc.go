@@ -324,11 +324,9 @@ func (s *server) FindMissingBlobs(ctx context.Context, req *pb.FindMissingBlobsR
 
 	resp := &pb.FindMissingBlobsResponse{}
 	var wg sync.WaitGroup
-	wg.Add(len(pending))
 	var mutex sync.Mutex
 	for _, d := range pending {
-		go func(d *pb.Digest) {
-			defer wg.Done()
+		wg.Go(func() {
 			key := s.compressedKey("cas", d, false)
 			if s.blobExistsUncached(ctx, key) {
 				s.markKnownBlob(key)
@@ -337,7 +335,7 @@ func (s *server) FindMissingBlobs(ctx context.Context, req *pb.FindMissingBlobsR
 				resp.MissingBlobDigests = append(resp.MissingBlobDigests, d)
 				mutex.Unlock()
 			}
-		}(d)
+		})
 	}
 	wg.Wait()
 	return resp, nil
