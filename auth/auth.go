@@ -61,6 +61,7 @@ var authenticatedMethods = map[string]string{
 	"/google.bytestream.ByteStream/Read":                                              CASRead,
 	"/google.bytestream.ByteStream/Write":                                             CASWrite,
 	"/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo":                  Reflection,
+	"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo":                       Reflection,
 	"/grpc.health.v1.Health/Check":                                                    Health,
 }
 
