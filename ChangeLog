@@ -1,3 +1,7 @@
+Version 11.19.4
+---------------
+	* Mettle: Replace Maxrss with a sample of the worker's cgroup memory 
+
 Version 11.19.3
 ---------------
 	* Elan: check blobs in Redis with pipelined EXISTS in FindMissingBlobs instead of one Redis call per digest, to reduce connection pool churn
