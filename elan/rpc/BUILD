@@ -7,6 +7,7 @@ go_library(
     visibility = [
         "//elan/...",
         "//mettle/worker/...",
+        "//zeal/...",
     ],
     deps = [
         "///third_party/go/cloud.google.com_go_storage//:storage",
