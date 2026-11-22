@@ -183,14 +183,88 @@ func main() {
 		for i := 0; i < opts.Dual.NumWorkers; i++ {
 			storage := opts.Dual.Storage.Storage[i%len(opts.Dual.Storage.Storage)]
 			dir := filepath.Join(opts.Dual.Dir, fmt.Sprintf("worker_%02d", i))
-			go worker.RunForever(opts.InstanceName, requests+"?ackdeadline=10m", responses, fmt.Sprintf("%s-%d", opts.InstanceName, i), storage, dir, opts.Dual.Cache.Dir, opts.Dual.Browser, opts.Dual.Sandbox, opts.Dual.AltSandbox, opts.Dual.Lucidity, "", opts.Dual.GRPC.TokenFile, primaryRedis, readRedis, opts.Worker.Redis.MaxSize, opts.Dual.Cache.Prefix, opts.Dual.Cache.Part, !opts.Dual.NoClean, opts.Dual.PreflightAction, opts.Dual.Storage.TLS, int64(opts.Dual.Cache.MaxMem), int64(opts.Dual.MinDiskSpace), opts.Dual.MemoryThreshold, opts.Dual.ConnCheck, time.Duration(opts.Dual.ConnCheckPeriod), opts.Dual.VersionFile, opts.Dual.Costs, 0, opts.Worker.ImmediateShutdown)
+			go worker.RunForever(worker.Opts{
+				InstanceName:    opts.InstanceName,
+				RequestQueue:    requests + "?ackdeadline=10m",
+				ResponseQueue:   responses,
+				Name:            fmt.Sprintf("%s-%d", opts.InstanceName, i),
+				Storage:         storage,
+				SecureStorage:   opts.Dual.Storage.TLS,
+				TokenFile:       opts.Dual.GRPC.TokenFile,
+				Dir:             dir,
+				Clean:           !opts.Dual.NoClean,
+				CacheDir:        opts.Dual.Cache.Dir,
+				CachePrefix:     opts.Dual.Cache.Prefix,
+				CacheParts:      opts.Dual.Cache.Part,
+				MaxCacheSize:    int64(opts.Dual.Cache.MaxMem),
+				BrowserURL:      opts.Dual.Browser,
+				Sandbox:         opts.Dual.Sandbox,
+				AltSandbox:      opts.Dual.AltSandbox,
+				Lucidity:        opts.Dual.Lucidity,
+				PrimaryRedis:    primaryRedis,
+				ReadRedis:       readRedis,
+				LargeBlobSize:   opts.Dual.Redis.MaxSize,
+				MinDiskSpace:    int64(opts.Dual.MinDiskSpace),
+				MemoryThreshold: opts.Dual.MemoryThreshold,
+				VersionFile:     opts.Dual.VersionFile,
+				Costs:           opts.Dual.Costs,
+				PreflightAction: opts.Dual.PreflightAction,
+				ConnCheck:       opts.Dual.ConnCheck,
+				ConnCheckPeriod: time.Duration(opts.Dual.ConnCheckPeriod),
+			})
 		}
-		api.ServeForever(opts.Dual.GRPC, "", queues, "", false, opts.Dual.AllowedPlatform, opts.Dual.Storage.Storage[0], opts.Dual.Storage.TLS)
+		api.ServeForever(api.Opts{
+			GRPC:            opts.Dual.GRPC,
+			Queues:          queues,
+			AllowedPlatform: opts.Dual.AllowedPlatform,
+			StorageURL:      opts.Dual.Storage.Storage[0],
+			StorageTLS:      opts.Dual.Storage.TLS,
+		})
 	} else if cmd == "worker" {
 		primaryRedis, readRedis := opts.Worker.Redis.Clients()
-		worker.RunForever(opts.InstanceName, opts.Worker.Queues.RequestQueue, opts.Worker.Queues.ResponseQueue, opts.Worker.Name, opts.Worker.Storage.Storage, opts.Worker.Dir, opts.Worker.Cache.Dir, opts.Worker.Browser, opts.Worker.Sandbox, opts.Worker.AltSandbox, opts.Worker.Lucidity, opts.Worker.PromGateway, opts.Worker.Storage.TokenFile, primaryRedis, readRedis, opts.Worker.Redis.MaxSize, opts.Worker.Cache.Prefix, opts.Worker.Cache.Part, !opts.Worker.NoClean, opts.Worker.PreflightAction, opts.Worker.Storage.TLS, int64(opts.Worker.Cache.MaxMem), int64(opts.Worker.MinDiskSpace), opts.Worker.MemoryThreshold, opts.Worker.ConnCheck, time.Duration(opts.Worker.ConnCheckPeriod), opts.Worker.VersionFile, opts.Worker.Costs, time.Duration(opts.Worker.Queues.AckExtension), opts.Worker.ImmediateShutdown)
+		worker.RunForever(worker.Opts{
+			InstanceName:      opts.InstanceName,
+			RequestQueue:      opts.Worker.Queues.RequestQueue,
+			ResponseQueue:     opts.Worker.Queues.ResponseQueue,
+			Name:              opts.Worker.Name,
+			Storage:           opts.Worker.Storage.Storage,
+			SecureStorage:     opts.Worker.Storage.TLS,
+			TokenFile:         opts.Worker.Storage.TokenFile,
+			Dir:               opts.Worker.Dir,
+			Clean:             !opts.Worker.NoClean,
+			CacheDir:          opts.Worker.Cache.Dir,
+			CachePrefix:       opts.Worker.Cache.Prefix,
+			CacheParts:        opts.Worker.Cache.Part,
+			MaxCacheSize:      int64(opts.Worker.Cache.MaxMem),
+			BrowserURL:        opts.Worker.Browser,
+			Sandbox:           opts.Worker.Sandbox,
+			AltSandbox:        opts.Worker.AltSandbox,
+			Lucidity:          opts.Worker.Lucidity,
+			PromGatewayURL:    opts.Worker.PromGateway,
+			PrimaryRedis:      primaryRedis,
+			ReadRedis:         readRedis,
+			LargeBlobSize:     opts.Worker.Redis.MaxSize,
+			MinDiskSpace:      int64(opts.Worker.MinDiskSpace),
+			MemoryThreshold:   opts.Worker.MemoryThreshold,
+			VersionFile:       opts.Worker.VersionFile,
+			Costs:             opts.Worker.Costs,
+			AckExtension:      time.Duration(opts.Worker.Queues.AckExtension),
+			PreflightAction:   opts.Worker.PreflightAction,
+			ConnCheck:         opts.Worker.ConnCheck,
+			ConnCheckPeriod:   time.Duration(opts.Worker.ConnCheckPeriod),
+			ImmediateShutdown: opts.Worker.ImmediateShutdown,
+		})
 	} else if cmd == "api" {
-		api.ServeForever(opts.API.GRPC, opts.API.Queues.ResponseQueueSuffix, opts.API.Queues, opts.API.API.URL, opts.API.API.TLS, opts.API.AllowedPlatform, opts.API.Storage.Storage, opts.API.Storage.TLS)
+		api.ServeForever(api.Opts{
+			GRPC:            opts.API.GRPC,
+			Name:            opts.API.Queues.ResponseQueueSuffix, // Unique per API server, so identifies it in pre-responses.
+			Queues:          opts.API.Queues,
+			APIURL:          opts.API.API.URL,
+			APITLS:          opts.API.API.TLS,
+			AllowedPlatform: opts.API.AllowedPlatform,
+			StorageURL:      opts.API.Storage.Storage,
+			StorageTLS:      opts.API.Storage.TLS,
+		})
 	} else if err := one(); err != nil {
 		log.Fatalf("%s", err)
 	}
@@ -218,7 +292,22 @@ func one() error {
 	}
 	primaryRedis, readRedis := opts.One.Redis.Clients()
 	for _, action := range opts.One.Args.Actions {
-		if err := worker.RunOne(opts.InstanceName, "mettle-one", opts.One.Storage.Storage, opts.One.Dir, opts.One.Cache.Dir, opts.One.Sandbox, opts.One.AltSandbox, opts.One.Storage.TokenFile, primaryRedis, readRedis, opts.Worker.Redis.MaxSize, opts.One.Cache.Prefix, opts.One.Cache.Part, false, opts.One.Storage.TLS, action.ToProto()); err != nil {
+		if err := worker.RunOne(worker.Opts{
+			InstanceName:  opts.InstanceName,
+			Name:          "mettle-one",
+			Storage:       opts.One.Storage.Storage,
+			SecureStorage: opts.One.Storage.TLS,
+			TokenFile:     opts.One.Storage.TokenFile,
+			Dir:           opts.One.Dir,
+			CacheDir:      opts.One.Cache.Dir,
+			CachePrefix:   opts.One.Cache.Prefix,
+			CacheParts:    opts.One.Cache.Part,
+			Sandbox:       opts.One.Sandbox,
+			AltSandbox:    opts.One.AltSandbox,
+			PrimaryRedis:  primaryRedis,
+			ReadRedis:     readRedis,
+			LargeBlobSize: opts.One.Redis.MaxSize,
+		}, action.ToProto()); err != nil {
 			return err
 		}
 	}

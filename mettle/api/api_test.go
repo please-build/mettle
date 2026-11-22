@@ -336,10 +336,16 @@ func setupServers(t *testing.T) (pb.ExecutionClient, *executor, *grpc.Server) {
 	queueID++
 	common.MustOpenTopic(requests)  // Ensure these are created before anything tries
 	common.MustOpenTopic(responses) // to open a subscription to either.
-	s, lis, err := serve(grpcutil.Opts{
-		Host: "127.0.0.1",
-		Port: 0,
-	}, "", queues, "", true, map[string][]string{}, casaddr, false)
+	s, lis, err := serve(Opts{
+		GRPC: grpcutil.Opts{
+			Host: "127.0.0.1",
+			Port: 0,
+		},
+		Queues:          queues,
+		APITLS:          true,
+		AllowedPlatform: map[string][]string{},
+		StorageURL:      casaddr,
+	})
 	require.NoError(t, err)
 	go s.Serve(lis)
 	conn, err := grpc.Dial(lis.Addr().String(), grpc.WithInsecure())
@@ -428,10 +434,16 @@ func setupRoutingServer(t *testing.T, allowedPlatform map[string][]string) *rout
 	common.MustOpenTopic(heavyQueue)
 	common.MustOpenTopic(responses)
 
-	s, lis, err := serve(grpcutil.Opts{
-		Host: "127.0.0.1",
-		Port: 0,
-	}, "", queues, "", true, allowedPlatform, casaddr, false)
+	s, lis, err := serve(Opts{
+		GRPC: grpcutil.Opts{
+			Host: "127.0.0.1",
+			Port: 0,
+		},
+		Queues:          queues,
+		APITLS:          true,
+		AllowedPlatform: allowedPlatform,
+		StorageURL:      casaddr,
+	})
 	require.NoError(t, err)
 	go s.Serve(lis)
 	t.Cleanup(s.Stop)
