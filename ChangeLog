@@ -1,18 +1,23 @@
+Version 11.19.5
+---------------
+    * Add SRI checksums to singleflighting of requests in Zeal (#374)
+    * Advertise action cache updatability (#375)
+
 Version 11.19.4
 ---------------
-	* Mettle: Replace Maxrss with a sample of the worker's cgroup memory 
+    * Mettle: Replace Maxrss with a sample of the worker's cgroup memory
 
 Version 11.19.3
 ---------------
-	* Elan: check blobs in Redis with pipelined EXISTS in FindMissingBlobs instead of one Redis call per digest, to reduce connection pool churn
+    * Elan: check blobs in Redis with pipelined EXISTS in FindMissingBlobs instead of one Redis call per digest, to reduce connection pool churn
 
 Version 11.19.2
 ---------------
-	* Elan: size the GCS upload buffer to the blob in WriteAll instead of the default 16 MiB per blob, which could exhaust memory
+    * Elan: size the GCS upload buffer to the blob in WriteAll instead of the default 16 MiB per blob, which could exhaust memory
 
 Version 11.19.1
 ---------------
-	* Fix phantom stale tasks across API servers (#368)
+    * Fix phantom stale tasks across API servers (#368)
 
 Version 11.19.0
 ---------------
