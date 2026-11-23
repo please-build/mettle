@@ -15,8 +15,9 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('third_party/go/BUILD', 'scripts/Dockerfile') }}
           restore-keys: |
             ${{ runner.os }}-go-
-      - name: Run tests
-        run: ./pleasew test --profile ci -p -v 2 --exclude //tests/...
+      - name: Build and test
+        # Using plz cover makes Please build everything even if there are no tests
+        run: ./pleasew cover --nocoverage_report --keep_going --profile ci -p -v 2 --exclude //tests/...
       - name: Archive logs
         if: always()
         uses: actions/upload-artifact@v4
