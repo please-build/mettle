@@ -2,6 +2,7 @@ Version 11.19.5
 ---------------
     * Add SRI checksums to singleflighting of requests in Zeal (#374)
     * Advertise action cache updatability (#375)
+    * Add CPU+I/O profile to admin server (#376)
 
 Version 11.19.4
 ---------------
