@@ -232,7 +232,7 @@ func (s *server) GetCapabilities(ctx context.Context, req *pb.GetCapabilitiesReq
 				pb.DigestFunction_SHA256,
 			},
 			ActionCacheUpdateCapabilities: &pb.ActionCacheUpdateCapabilities{
-				UpdateEnabled: false,
+				UpdateEnabled: true,
 			},
 			CachePriorityCapabilities: &pb.PriorityCapabilities{
 				Priorities: []*pb.PriorityCapabilities_PriorityRange{
