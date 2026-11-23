@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 // newProgressBar returns a channel to a progress bar that animates until the channel is closed.
@@ -16,7 +16,7 @@ func newProgressBar(message string, total int) chan<- int {
 		total:   total,
 		ch:      make(chan int, 10),
 	}
-	if cols, _, err := terminal.GetSize(int(os.Stderr.Fd())); err == nil {
+	if cols, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil {
 		bar.cols = cols
 	}
 	go bar.Animate()
