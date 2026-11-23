@@ -11,6 +11,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -197,7 +198,7 @@ func (s *server) fetchBlob(ctx context.Context, req *pb.FetchBlobRequest) (*pb.F
 // fetchOne makes a single HTTP request. It checks against the given subresource
 // integrity constraints to verify the content is as expected.
 func (s *server) fetchOne(ctx context.Context, url string, timeout *duration.Duration, qualifiers []*pb.Qualifier) (*rpb.Digest, error) {
-	if d, err := ptypes.Duration(timeout); err != nil {
+	if d, err := ptypes.Duration(timeout); err == nil && d > 0 {
 		ctx, cancel := context.WithTimeout(ctx, d)
 		defer cancel()
 		return s.singleflightFetchURL(ctx, url, qualifiers)
@@ -207,14 +208,17 @@ func (s *server) fetchOne(ctx context.Context, url string, timeout *duration.Dur
 
 // singleflightFetchURL fetches a single URL, ensuring we are only fetching the same one once at a time.
 func (s *server) singleflightFetchURL(ctx context.Context, url string, qualifiers []*pb.Qualifier) (*rpb.Digest, error) {
-	v, _ := s.downloads.LoadOrStore(url, &download{})
+	// The qualifiers must be part of the key; otherwise a request with a checksum.sri qualifier could be
+	// satisfied by an earlier download of the same URL that was checked against a different one (or none at all).
+	key := downloadKey(url, qualifiers)
+	v, _ := s.downloads.LoadOrStore(key, &download{})
 	d := v.(*download)
 	d.once.Do(func() {
 		d.digest, d.err = s.fetchURL(ctx, url, qualifiers)
 	})
 	// Don't keep failed downloads around in the singleflight map, but we can remember successful ones.
 	if d.err != nil {
-		s.downloads.Delete(url)
+		s.downloads.CompareAndDelete(key, d)
 		return d.digest, d.err
 	}
 	// Verify that the CAS still contains this resource.
@@ -223,10 +227,24 @@ func (s *server) singleflightFetchURL(ctx context.Context, url string, qualifier
 		BlobDigests:  []*rpb.Digest{d.digest},
 	}); err != nil || len(resp.MissingBlobDigests) > 0 {
 		log.Warning("CAS does not still contain blob for %s, re-triggering download.", url)
-		s.downloads.Delete(url)
+		s.downloads.CompareAndDelete(key, d)
 		return s.singleflightFetchURL(ctx, url, qualifiers)
 	}
 	return d.digest, d.err
+}
+
+// downloadKey returns the key we use for a download in the singleflight map.
+// It incorporates the qualifiers since they can affect whether a download is considered valid.
+func downloadKey(url string, qualifiers []*pb.Qualifier) string {
+	if len(qualifiers) == 0 {
+		return url
+	}
+	qs := make([]string, len(qualifiers))
+	for i, q := range qualifiers {
+		qs[i] = q.Name + "=" + q.Value
+	}
+	sort.Strings(qs)
+	return url + "\n" + strings.Join(qs, "\n")
 }
 
 func (s *server) fetchURL(ctx context.Context, url string, qualifiers []*pb.Qualifier) (*rpb.Digest, error) {

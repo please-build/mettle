@@ -22,3 +22,19 @@ go_library(
         "//rexclient",
     ],
 )
+
+go_test(
+    name = "rpc_test",
+    srcs = ["rpc_test.go"],
+    deps = [
+        ":rpc",
+        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/asset/v1",
+        "///third_party/go/github.com_hashicorp_go-retryablehttp//:go-retryablehttp",
+        "///third_party/go/github.com_stretchr_testify//assert",
+        "///third_party/go/github.com_stretchr_testify//require",
+        "///third_party/go/google.golang.org_protobuf//types/known/durationpb",
+        "//elan/rpc",
+        "//grpcutil",
+        "//rexclient",
+    ],
+)
