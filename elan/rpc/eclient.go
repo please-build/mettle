@@ -156,7 +156,7 @@ func (e *elanClient) BatchDownload(digests []digest.Digest) (map[digest.Digest][
 func (e *elanClient) downloadOne(dg *pb.Digest) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
 	defer cancel()
-	b, _, err := e.s.readAllBlobBatched(ctx, "cas", dg, true, false)
+	b, _, err := e.s.readAllBlobBatched(ctx, "cas", dg, true, false, false)
 	return b, err
 }
 

@@ -163,7 +163,7 @@ func ServeForever(opts grpcutil.Opts, storage string, parallelism int, maxDirCac
 
 func createServer(storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) *server {
 	dec, _ := zstd.NewReader(nil)
-	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	enc := mustNewEncoder(nil)
 	if largeBlobSize <= 0 {
 		largeBlobSize = DefaultMaxSize
 	}
@@ -354,55 +354,51 @@ func (s *server) knownBlob(key string) bool {
 	return false
 }
 
-// fmbPipelineSize is the number of Redis EXISTS commands that FindMissingBlobs sends in one pipeline.
-// It is big enough that most requests need a single round trip, and small enough that a pipeline keeps
-// the shared, single-threaded Redis busy for well under a millisecond and that a failed pipeline sends
-// only this many digests to the bucket at once.
-const fmbPipelineSize = 256
+// redisPipelineSize is the number of Redis commands that FindMissingBlobs and BatchReadBlobs send
+// in one pipeline. It is big enough that most requests need a single round trip, and small enough
+// that a pipeline keeps the shared, single-threaded Redis busy for well under a millisecond and
+// that a failed pipeline sends only this many digests to the bucket at once.
+const redisPipelineSize = 256
 
 // notInRedis returns the digests that Redis does not know about, which still have to be checked in the bucket.
 // Blobs too large to be indexed in Redis are returned as they are. The lookups are pipelined, so a request needs
-// one connection and one round trip per fmbPipelineSize digests instead of one per digest. If a pipeline fails
+// one connection and one round trip per redisPipelineSize digests instead of one per digest. If a pipeline fails
 // its digests are returned as well, so that they go to the bucket, as they would after a failed single lookup.
 func (s *server) notInRedis(ctx context.Context, digests []*pb.Digest) []*pb.Digest {
 	if s.readRedis == nil {
 		return digests
 	}
-	var small, rest []*pb.Digest
-	for _, d := range digests {
+	var eligible []int
+	for i, d := range digests {
 		if d.SizeBytes < s.largeBlobSize {
-			small = append(small, d)
-		} else {
-			rest = append(rest, d)
+			eligible = append(eligible, i)
 		}
 	}
-	found := make([]bool, len(small))
+	found := make([]bool, len(digests))
 	var wg sync.WaitGroup
-	for lo := 0; lo < len(small); lo += fmbPipelineSize {
-		chunk := small[lo:min(lo+fmbPipelineSize, len(small))]
-		wg.Add(1)
-		// Each goroutine writes only to its own part of found.
-		go func(chunk []*pb.Digest, found []bool) {
-			defer wg.Done()
+	for chunk := range slices.Chunk(eligible, redisPipelineSize) {
+		// Each goroutine writes only to the entries of found named in its own chunk.
+		wg.Go(func() {
 			cmds := make([]*redis.IntCmd, len(chunk))
 			if _, err := s.readRedis.Pipelined(ctx, func(p redis.Pipeliner) error {
-				for i, d := range chunk {
-					cmds[i] = p.Exists(ctx, d.Hash)
+				for j, i := range chunk {
+					cmds[j] = p.Exists(ctx, digests[i].Hash)
 				}
 				return nil
 			}); err != nil {
 				log.Warningf("Failed to check blobs in Redis: %v", err)
 				return
 			}
-			for i, cmd := range cmds {
+			for j, cmd := range cmds {
 				if n, err := cmd.Result(); err == nil && n > 0 {
-					found[i] = true
+					found[chunk[j]] = true
 				}
 			}
-		}(chunk, found[lo:lo+len(chunk)])
+		})
 	}
 	wg.Wait()
-	for i, d := range small {
+	var rest []*pb.Digest
+	for i, d := range digests {
 		if found[i] {
 			s.markKnownBlob(s.compressedKey("cas", d, false))
 		} else {
@@ -518,13 +514,14 @@ func (s *server) BatchReadBlobs(ctx context.Context, req *pb.BatchReadBlobsReque
 		Responses: make([]*pb.BatchReadBlobsResponse_Response, n),
 	}
 	allowCompression := slices.Contains(req.AcceptableCompressors, pb.Compressor_ZSTD)
+	inRedis := s.readFromRedis(ctx, req.Digests)
 	var wg sync.WaitGroup
 	var size int64
 	wg.Add(n)
 	for i, d := range req.Digests {
 		size += d.SizeBytes
 		go func(i int, d *pb.Digest) {
-			resp.Responses[i] = s.batchReadBlob(ctx, d, allowCompression)
+			resp.Responses[i] = s.batchReadBlob(ctx, d, inRedis[i], allowCompression)
 			wg.Done()
 		}(i, d)
 	}
@@ -533,13 +530,58 @@ func (s *server) BatchReadBlobs(ctx context.Context, req *pb.BatchReadBlobsReque
 	return resp, nil
 }
 
-func (s *server) batchReadBlob(ctx context.Context, d *pb.Digest, allowCompression bool) *pb.BatchReadBlobsResponse_Response {
+// readFromRedis returns the contents of each digest that is held in Redis, aligned with digests; the entry
+// is nil for digests that are not found, not eligible for Redis, or whose pipeline failed. The lookups are
+// pipelined, so one connection and one round trip is needed per redisPipelineSize digests.
+func (s *server) readFromRedis(ctx context.Context, digests []*pb.Digest) [][]byte {
+	blobs := make([][]byte, len(digests))
+	if s.readRedis == nil {
+		return blobs
+	}
+	var eligible []int
+	for i, d := range digests {
+		if len(d.Hash) >= 2 && !s.isEmpty(d) && d.SizeBytes < s.largeBlobSize {
+			eligible = append(eligible, i)
+		}
+	}
+	var wg sync.WaitGroup
+	for chunk := range slices.Chunk(eligible, redisPipelineSize) {
+		// Each goroutine writes only to the entries of blobs named in its own chunk.
+		wg.Go(func() {
+			cmds := make([]*redis.StringCmd, len(chunk))
+			// A miss makes Pipelined return redis.Nil, which isn't a failure.
+			if _, err := s.readRedis.Pipelined(ctx, func(p redis.Pipeliner) error {
+				for j, i := range chunk {
+					cmds[j] = p.Get(ctx, digests[i].Hash)
+				}
+				return nil
+			}); err != nil && err != redis.Nil {
+				log.Warningf("Failed to get blobs in Redis: %v", err)
+			}
+			for j, cmd := range cmds {
+				if blob, err := cmd.Bytes(); err == nil && blob != nil {
+					blobs[chunk[j]] = blob
+				}
+			}
+		})
+	}
+	wg.Wait()
+	return blobs
+}
+
+// batchReadBlob reads a single blob for BatchReadBlobs. inRedis is its contents if they were found in Redis.
+func (s *server) batchReadBlob(ctx context.Context, d *pb.Digest, inRedis []byte, allowCompression bool) *pb.BatchReadBlobsResponse_Response {
 	log.Debug("Received batch read request for %s", d)
 	r := &pb.BatchReadBlobsResponse_Response{
 		Status: &rpcstatus.Status{},
 		Digest: d,
 	}
-	if data, compressed, err := s.readAllBlobBatched(ctx, "cas", d, true, allowCompression); err != nil {
+	if inRedis != nil {
+		r.Data = inRedis
+		r.Compressor = compressor(false)
+		bytesServed.WithLabelValues(batchLabel(true, false), compressorLabel(false)).Add(float64(d.SizeBytes))
+		log.Debug("Served batchReadBlob request for %s from Redis", r.Digest)
+	} else if data, compressed, err := s.readAllBlobBatched(ctx, "cas", d, true, allowCompression, true); err != nil {
 		r.Status.Code = int32(status.Code(err))
 		r.Status.Message = err.Error()
 		log.Error("Error reading blob %s: %s", r.Digest, err)
@@ -731,18 +773,19 @@ func (s *server) readBlob(ctx context.Context, key string, offset, length int64)
 }
 
 func (s *server) readAllBlob(ctx context.Context, prefix string, digest *pb.Digest) ([]byte, error) {
-	b, _, err := s.readAllBlobBatched(ctx, prefix, digest, false, false)
+	b, _, err := s.readAllBlobBatched(ctx, prefix, digest, false, false, false)
 	return b, err
 }
 
-func (s *server) readAllBlobBatched(ctx context.Context, prefix string, digest *pb.Digest, batched, allowCompression bool) ([]byte, bool, error) {
+// readAllBlobBatched reads a whole blob. If skipRedis is set, Redis is not consulted because the caller already did.
+func (s *server) readAllBlobBatched(ctx context.Context, prefix string, digest *pb.Digest, batched, allowCompression, skipRedis bool) ([]byte, bool, error) {
 	if len(digest.Hash) < 2 {
 		return nil, false, fmt.Errorf("Invalid hash: [%s]", digest.Hash)
 	} else if s.isEmpty(digest) {
 		return nil, false, nil
 	}
 
-	if s.readRedis != nil && prefix == CASPrefix && digest.SizeBytes < s.largeBlobSize {
+	if !skipRedis && s.readRedis != nil && prefix == CASPrefix && digest.SizeBytes < s.largeBlobSize {
 		blob, err := s.readRedis.Get(ctx, digest.Hash).Bytes()
 		if err != nil && err != redis.Nil {
 			log.Warningf("Failed to get blob in Redis: %v", err)

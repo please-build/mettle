@@ -3983,3 +3983,15 @@ go_repo(
     module = "go.yaml.in/yaml/v3",
     version = "v3.0.5",
 )
+
+go_repo(
+    licences = ["MIT"],
+    module = "github.com/alicebob/miniredis/v2",
+    version = "v2.40.0",
+)
+
+go_repo(
+    licences = ["MIT"],
+    module = "github.com/yuin/gopher-lua",
+    version = "v1.1.1",
+)
