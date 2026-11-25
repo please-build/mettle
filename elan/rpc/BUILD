@@ -29,7 +29,6 @@ go_library(
         "///third_party/go/gocloud.dev//blob/gcsblob",
         "///third_party/go/gocloud.dev//blob/memblob",
         "///third_party/go/gocloud.dev//gcerrors",
-        "///third_party/go/golang.org_x_exp//slices",
         "///third_party/go/golang.org_x_sync//errgroup",
         "///third_party/go/google.golang.org_api//googleapi",
         "///third_party/go/google.golang.org_genproto_googleapis_bytestream//:bytestream",
@@ -45,15 +44,21 @@ go_library(
 )
 
 go_test(
-    name = "compression_test",
-    srcs = ["compression_test.go"],
+    name = "rpc_test",
+    srcs = glob(["*_test.go"]),
     data = [":test_data"],
     deps = [
         ":rpc",
+        "///third_party/go/github.com_alicebob_miniredis_v2//:v2",
+        "///third_party/go/github.com_bazelbuild_remote-apis-sdks//go/pkg/digest",
+        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/execution/v2",
+        "///third_party/go/github.com_go-redis_redis_v8//:v8",
         "///third_party/go/github.com_klauspost_compress//zstd",
         "///third_party/go/github.com_stretchr_testify//assert",
         "///third_party/go/github.com_stretchr_testify//require",
         "///third_party/go/google.golang.org_genproto_googleapis_bytestream//:bytestream",
+        "///third_party/go/google.golang.org_grpc//codes",
+        "///third_party/go/google.golang.org_grpc//status",
         "//grpcutil",
     ],
 )
@@ -71,16 +76,4 @@ genrule(
     output_dirs = ["data"],
     test_only = True,
     tools = ["//scripts:compress"],
-)
-
-go_test(
-    name = "ratelimit_test",
-    srcs = ["ratelimit_test.go"],
-    deps = [
-        ":rpc",
-        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/execution/v2",
-        "///third_party/go/github.com_stretchr_testify//assert",
-        "///third_party/go/google.golang.org_grpc//codes",
-        "///third_party/go/google.golang.org_grpc//status",
-    ],
 )

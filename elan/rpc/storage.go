@@ -117,8 +117,7 @@ func (s *server) compressWriter(w io.Writer, needCompression bool) io.WriteClose
 	if !needCompression {
 		return &nopCloser{w: w}
 	}
-	zw, _ := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedFastest))
-	return zw
+	return mustNewEncoder(w)
 }
 
 type nopCloser struct {

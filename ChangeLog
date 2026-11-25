@@ -1,3 +1,7 @@
+Version 11.19.6
+---------------
+	* Elan: Make BatchReadBlobs pipeline its calls to Redis to reduce number of Redis connections (#383)
+
 Version 11.19.5
 ---------------
     * Add SRI checksums to singleflighting of requests in Zeal (#374)
