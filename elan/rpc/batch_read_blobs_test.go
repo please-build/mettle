@@ -87,12 +87,10 @@ func TestBatchReadBlobs(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 
-		// Setup
 		blobs blobCounts
 		// redisFails makes every Redis call fail, so small blobs must come from the bucket.
 		redisFails bool
 
-		// Request: the digests of the blobs are requested first, then extraDigests.
 		extraDigests []*pb.Digest
 		acceptZstd   bool
 
