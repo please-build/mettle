@@ -3843,7 +3843,7 @@ go_repo(
 )
 
 go_repo(
-    module = "github.com/thought-machine/please-servers",
+    module = "github.com/please-build/mettle",
     version = "v6.3.8+incompatible",
 )
 

@@ -11,7 +11,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/shirou/gopsutil/mem"
 
-	lpb "github.com/thought-machine/please-servers/proto/lucidity"
+	lpb "github.com/please-build/mettle/proto/lucidity"
 )
 
 // Report reports to Lucidity how this worker currently considers itself.

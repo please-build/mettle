@@ -18,10 +18,10 @@ import (
 	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
+	bpb "github.com/please-build/mettle/proto/mettle"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thought-machine/go-flags"
-	bpb "github.com/thought-machine/please-servers/proto/mettle"
 	"gocloud.dev/gcerrors"
 	"gocloud.dev/pubsub"
 	"gocloud.dev/pubsub/driver"
@@ -31,9 +31,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/mettle/common"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/mettle/common"
+	"github.com/please-build/mettle/rexclient"
 )
 
 const (

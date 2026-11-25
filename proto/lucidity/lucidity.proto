@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package build.please.remote.lucidity;
 
-option go_package = "github.com/thought-machine/please-servers/proto/lucidity";
+option go_package = "github.com/please-build/mettle/proto/lucidity";
 
 // The Lucidity service provides a small API for workers to report in to a
 // central server and send some basic information about their status.

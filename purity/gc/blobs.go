@@ -16,8 +16,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	ppb "github.com/thought-machine/please-servers/proto/purity"
-	"github.com/thought-machine/please-servers/rexclient"
+	ppb "github.com/please-build/mettle/proto/purity"
+	"github.com/please-build/mettle/rexclient"
 )
 
 // markReferencedBlobs takes an action result and adds all blobs on which this

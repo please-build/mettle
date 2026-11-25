@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/thought-machine/please-servers/cli"
+	"github.com/please-build/mettle/cli"
 )
 
 var log = cli.MustGetLogger()

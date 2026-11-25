@@ -8,7 +8,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 
-	pb "github.com/thought-machine/please-servers/proto/lucidity"
+	pb "github.com/please-build/mettle/proto/lucidity"
 )
 
 func TestValidVersion(t *testing.T) {

@@ -18,9 +18,9 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
 	clilogging "github.com/peterebden/go-cli-init/v4/logging"
+	bpb "github.com/please-build/mettle/proto/mettle"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
-	bpb "github.com/thought-machine/please-servers/proto/mettle"
 	"gocloud.dev/pubsub"
 	"google.golang.org/genproto/googleapis/longrunning"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
@@ -29,9 +29,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/mettle/common"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/mettle/common"
+	"github.com/please-build/mettle/rexclient"
 )
 
 var log = clilogging.MustGetLogger()

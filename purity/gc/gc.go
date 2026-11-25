@@ -19,8 +19,8 @@ import (
 	"github.com/peterebden/go-cli-init/v4/logging"
 	"github.com/sirupsen/logrus"
 
-	ppb "github.com/thought-machine/please-servers/proto/purity"
-	"github.com/thought-machine/please-servers/rexclient"
+	ppb "github.com/please-build/mettle/proto/purity"
+	"github.com/please-build/mettle/rexclient"
 )
 
 var log = logging.MustGetLogger()

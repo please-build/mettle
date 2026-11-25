@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/please-build/mettle/grpcutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/thought-machine/please-servers/grpcutil"
 	bs "google.golang.org/genproto/googleapis/bytestream"
 )
 

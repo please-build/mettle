@@ -8,10 +8,10 @@ import (
 	"github.com/peterebden/go-cli-init/v4/logging"
 	"google.golang.org/grpc"
 
-	"github.com/thought-machine/please-servers/cli"
-	"github.com/thought-machine/please-servers/flair/rpc"
-	"github.com/thought-machine/please-servers/flair/trie"
-	"github.com/thought-machine/please-servers/grpcutil"
+	"github.com/please-build/mettle/cli"
+	"github.com/please-build/mettle/flair/rpc"
+	"github.com/please-build/mettle/flair/trie"
+	"github.com/please-build/mettle/grpcutil"
 )
 
 var log = logging.MustGetLogger()

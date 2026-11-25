@@ -47,9 +47,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/thought-machine/please-servers/grpcutil"
-	ppb "github.com/thought-machine/please-servers/proto/purity"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/grpcutil"
+	ppb "github.com/please-build/mettle/proto/purity"
+	"github.com/please-build/mettle/rexclient"
 )
 
 const timeout = 2 * time.Minute

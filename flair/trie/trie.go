@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
-	ppb "github.com/thought-machine/please-servers/proto/purity"
+	ppb "github.com/please-build/mettle/proto/purity"
 )
 
 // A Trie provides fast lookups on hash keys.
