@@ -11,11 +11,17 @@ import (
 
 	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/stretchr/testify/assert"
+	"gocloud.dev/blob"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-var errRateLimited = status.Error(codes.ResourceExhausted, "exceeded the rate limit for object mutation operations")
+// Unfortunately, we can't construct the errors that gocloud would produce, so we test against
+// gRPC errors.
+var (
+	errRateLimited        = status.Error(codes.ResourceExhausted, "exceeded the rate limit for object mutation operations")
+	errFailedPrecondition = status.Error(codes.FailedPrecondition, "failed precondition")
+)
 
 // fakeBucket is a bucket whose writes fail with a given error and whose blobs appear to exist
 // after a given number of existence checks.
@@ -27,7 +33,7 @@ type fakeBucket struct {
 	existsCalls int
 }
 
-func (f *fakeBucket) WriteAll(ctx context.Context, key string, data []byte) error {
+func (f *fakeBucket) WriteAll(ctx context.Context, key string, data []byte, opts *blob.WriterOptions) error {
 	return f.writeErr
 }
 
@@ -44,44 +50,44 @@ func setFastRechecks(t *testing.T) {
 	t.Cleanup(func() { rateLimitedWriteRechecks = old })
 }
 
-func TestHandleRateLimitedWriteNoError(t *testing.T) {
+func TestHandleCASWriteErrorNoError(t *testing.T) {
 	b := &fakeBucket{}
 	s := &server{bucket: b}
-	assert.NoError(t, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", nil))
+	assert.NoError(t, s.handleCASWriteError(t.Context(), "cas/ab/abcd", nil))
 	assert.Equal(t, 0, b.existsCalls)
 }
 
-func TestHandleRateLimitedWriteOtherError(t *testing.T) {
+func TestHandleCASWriteErrorOtherError(t *testing.T) {
 	b := &fakeBucket{existsAfter: 1}
 	s := &server{bucket: b}
 	err := errors.New("kaboom")
-	assert.Equal(t, err, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", err))
+	assert.Equal(t, err, s.handleCASWriteError(t.Context(), "cas/ab/abcd", err))
 	assert.Equal(t, 0, b.existsCalls, "Should not check for existence on errors other than rate limiting")
 }
 
-func TestHandleRateLimitedWriteBlobAppears(t *testing.T) {
+func TestHandleCASWriteErrorBlobAppears(t *testing.T) {
 	setFastRechecks(t)
 	b := &fakeBucket{existsAfter: 2}
 	s := &server{bucket: b}
-	assert.NoError(t, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", errRateLimited))
+	assert.NoError(t, s.handleCASWriteError(t.Context(), "cas/ab/abcd", errRateLimited))
 	assert.Equal(t, 2, b.existsCalls)
 }
 
-func TestHandleRateLimitedWriteBlobNeverAppears(t *testing.T) {
+func TestHandleCASWriteErrorBlobNeverAppears(t *testing.T) {
 	setFastRechecks(t)
 	b := &fakeBucket{}
 	s := &server{bucket: b}
-	assert.Equal(t, errRateLimited, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", errRateLimited))
+	assert.Equal(t, errRateLimited, s.handleCASWriteError(t.Context(), "cas/ab/abcd", errRateLimited))
 	assert.Equal(t, len(rateLimitedWriteRechecks), b.existsCalls)
 }
 
-func TestHandleRateLimitedWriteContextCancelled(t *testing.T) {
+func TestHandleCASWriteErrorContextCancelled(t *testing.T) {
 	setFastRechecks(t)
 	b := &fakeBucket{existsAfter: 1}
 	s := &server{bucket: b}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	assert.Equal(t, errRateLimited, s.handleRateLimitedWrite(ctx, "cas/ab/abcd", errRateLimited))
+	assert.Equal(t, errRateLimited, s.handleCASWriteError(ctx, "cas/ab/abcd", errRateLimited))
 	assert.Equal(t, 0, b.existsCalls)
 }
 
@@ -100,12 +106,19 @@ func TestWriteAllRateLimited(t *testing.T) {
 
 func TestElanClientWriteBlobRateLimited(t *testing.T) {
 	setFastRechecks(t)
-	// The initial existence check in WriteBlob is the first call, so make it appear on the second.
-	e := &elanClient{s: &server{bucket: &fakeBucket{writeErr: errRateLimited, existsAfter: 2}}, timeout: time.Minute}
+	e := &elanClient{s: &server{bucket: &fakeBucket{writeErr: errRateLimited, existsAfter: 1}}, timeout: time.Minute}
 	_, err := e.WriteBlob(t.Context(), []byte("hello world"))
 	assert.NoError(t, err)
 
 	e = &elanClient{s: &server{bucket: &fakeBucket{writeErr: errRateLimited}}, timeout: time.Minute}
 	_, err = e.WriteBlob(t.Context(), []byte("hello world"))
 	assert.Error(t, err)
+}
+
+func TestHandleCASWriteFailedPrecondition(t *testing.T) {
+	s := createServer(t.Context(), "mem://", 4, 0, 1<<20, nil, 0)
+	assert.NoError(t, s.handleCASWriteError(t.Context(), "cas/ab/abcd", errFailedPrecondition))
+	s.knownBlobCache.Wait()
+	_, known := s.knownBlobCache.Get("cas/ab/abcd")
+	assert.True(t, known)
 }

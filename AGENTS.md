@@ -27,8 +27,9 @@ This project uses **Please** (https://please.build), a high-performance build sy
 # Run linter
 ./pleasew puku lint
 
-# Format code
-./pleasew puku fmt
+# Format and populate BUILD files. Always use this in favour of manually editing BUILD files when
+# making changes to Go libraries, binaries, and tests
+./pleasew puku fmt //elan/rpc
 ```
 
 ### Running Individual Servers Locally

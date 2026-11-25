@@ -26,11 +26,24 @@ var rateLimitedWrites = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help:      "Number of CAS writes rejected by the storage backend as rate limited, partitioned by whether the blob was subsequently found to exist.",
 }, []string{"recovered"})
 
+var failedConditionalWrites = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: "elan",
+	Name:      "failed_conditional_writes_total",
+	Help:      "Number of CAS writes rejected by the storage backend which failed the conditional write precondition.",
+})
+
 func init() {
 	prometheus.MustRegister(rateLimitedWrites)
+	prometheus.MustRegister(failedConditionalWrites)
 }
 
-// handleRateLimitedWrite handles an error from writing a CAS blob to the bucket.
+// handleCASWriteError handles an error from writing a CAS blob to the GCS bucket. It handles both
+// conditional writes and rate limiting.
+//
+// Conditional writes are used to avoid a round trip to check for existence when we are confident
+// the blob doesn't exist in GCS (which is generally the case for writes because we expect the
+// client to call FindMissingBlobs before trying to upload anything). Conditional writes return a
+// 412 Precondition Failed error which can be ignored.
 //
 // GCS limits writes to a single object to around one per second, so if several clients upload the
 // same blob at once all but one of them can be rejected with a 429. Since CAS keys are content
@@ -40,7 +53,12 @@ func init() {
 //
 // The given context must not have been cancelled as a result of the error (otherwise we can't check).
 // Returns nil if the blob is found to exist, otherwise the original error.
-func (s *server) handleRateLimitedWrite(ctx context.Context, key string, err error) error {
+func (s *server) handleCASWriteError(ctx context.Context, key string, err error) error {
+	if isFailedPrecondition(err) {
+		failedConditionalWrites.Inc()
+		s.markKnownBlob(key)
+		return nil
+	}
 	if !isRateLimited(err) {
 		return err
 	}
@@ -61,6 +79,12 @@ func (s *server) handleRateLimitedWrite(ctx context.Context, key string, err err
 	}
 	rateLimitedWrites.WithLabelValues("false").Inc()
 	return err
+}
+
+// isFailedPrecondition returns true if the given error is a failed precondition (which is expected
+// and ignored for conditional writes).
+func isFailedPrecondition(err error) bool {
+	return err != nil && (gcerrors.Code(err) == gcerrors.FailedPrecondition || status.Code(err) == codes.FailedPrecondition)
 }
 
 // isRateLimited returns true if the given error is for a request being rate limited.
