@@ -110,6 +110,7 @@ require (
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260706201446-f0a921348800 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/bazelbuild/remote-apis-sdks => github.com/peterebden/remote-apis-sdks v0.0.0-20230519151942-2a9420921957
