@@ -1,0 +1,193 @@
+package grpcutil
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	apb "github.com/bazelbuild/remote-apis/build/bazel/remote/asset/v1"
+	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
+	rpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	rapb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+
+	lpb "github.com/please-build/mettle/proto/lucidity"
+	bpb "github.com/please-build/mettle/proto/mettle"
+	ppb "github.com/please-build/mettle/proto/purity"
+)
+
+const (
+	getCapabilities    = "/build.bazel.remote.execution.v2.Capabilities/GetCapabilities"
+	fetchBlob          = "/build.bazel.remote.asset.v1.Fetch/FetchBlob"
+	getActionResult    = "/build.bazel.remote.execution.v2.ActionCache/GetActionResult"
+	updateActionResult = "/build.bazel.remote.execution.v2.ActionCache/UpdateActionResult"
+	batchReadBlobs     = "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchReadBlobs"
+	batchUpdateBlobs   = "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs"
+	findMissingBlobs   = "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs"
+	getTree            = "/build.bazel.remote.execution.v2.ContentAddressableStorage/GetTree"
+	execute            = "/build.bazel.remote.execution.v2.Execution/Execute"
+	waitExecution      = "/build.bazel.remote.execution.v2.Execution/WaitExecution"
+	serveExecutions    = "/build.please.remote.mettle.Bootstrap/ServeExecutions"
+	gcList             = "/build.please.remote.purity.GC/List"
+	gcDelete           = "/build.please.remote.purity.GC/Delete"
+	lucidityUpdate     = "/build.please.remote.lucidity.Lucidity/Update"
+	lucidityList       = "/build.please.remote.lucidity.Lucidity/ListWorkers"
+	bsQueryWriteStatus = "/google.bytestream.ByteStream/QueryWriteStatus"
+	bsRead             = "/google.bytestream.ByteStream/Read"
+	bsWrite            = "/google.bytestream.ByteStream/Write"
+	reflectionV1Alpha  = "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"
+	reflectionV1       = "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo"
+	healthCheck        = "/grpc.health.v1.Health/Check"
+)
+
+// Methods that don't need a token when only --token_file is given.
+var anonymousMethods = []string{
+	getCapabilities,
+	getActionResult,
+	batchReadBlobs,
+	findMissingBlobs,
+	getTree,
+	waitExecution,
+	serveExecutions,
+	bsRead,
+	reflectionV1Alpha,
+	reflectionV1,
+	healthCheck,
+}
+
+// Methods that need a token when only --token_file is given.
+var mutatingMethods = []string{
+	fetchBlob,
+	updateActionResult,
+	batchUpdateBlobs,
+	execute,
+	gcList,
+	gcDelete,
+	lucidityUpdate,
+	lucidityList,
+	bsQueryWriteStatus,
+	bsWrite,
+}
+
+// Every service registered on any of our servers.
+var registeredServices = []grpc.ServiceDesc{
+	pb.Capabilities_ServiceDesc,
+	pb.ActionCache_ServiceDesc,
+	pb.ContentAddressableStorage_ServiceDesc,
+	pb.Execution_ServiceDesc,
+	apb.Fetch_ServiceDesc,
+	// genproto doesn't export ByteStream's ServiceDesc
+	{
+		ServiceName: "google.bytestream.ByteStream",
+		Methods:     []grpc.MethodDesc{{MethodName: "QueryWriteStatus"}},
+		Streams:     []grpc.StreamDesc{{StreamName: "Read"}, {StreamName: "Write"}},
+	},
+	bpb.Bootstrap_ServiceDesc,
+	ppb.GC_ServiceDesc,
+	lpb.Lucidity_ServiceDesc,
+	grpc_health_v1.Health_ServiceDesc,
+	rpb.ServerReflection_ServiceDesc,
+	rapb.ServerReflection_ServiceDesc,
+}
+
+func allMethods() []string {
+	var methods []string
+	for _, svc := range registeredServices {
+		for _, m := range svc.Methods {
+			methods = append(methods, "/"+svc.ServiceName+"/"+m.MethodName)
+		}
+		for _, s := range svc.Streams {
+			methods = append(methods, "/"+svc.ServiceName+"/"+s.StreamName)
+		}
+	}
+	return methods
+}
+
+func writeToken(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(path, []byte("s3cr3t\n"), 0644))
+	return path
+}
+
+func withToken(token string) context.Context {
+	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
+}
+
+func TestLoadAuthNoFlags(t *testing.T) {
+	a := loadAuth(context.Background(), Opts{})
+	for _, ctx := range []context.Context{
+		context.Background(),
+		withToken("s3cr3t"),
+		metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "garbage")),
+	} {
+		for _, method := range allMethods() {
+			assert.NoError(t, a.AuthRPC(ctx, method), method)
+		}
+		assert.NoError(t, a.AuthRPC(ctx, "/some.Unknown/Method"))
+	}
+}
+
+func TestLoadAuthTokenFile(t *testing.T) {
+	a := loadAuth(context.Background(), Opts{TokenFile: writeToken(t)})
+	for _, method := range anonymousMethods {
+		assert.NoError(t, a.AuthRPC(context.Background(), method), method)
+	}
+	for _, method := range mutatingMethods {
+		assert.Error(t, a.AuthRPC(context.Background(), method), method)
+		assert.Error(t, a.AuthRPC(withToken("wrong"), method), method)
+	}
+	for _, method := range allMethods() {
+		assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), method), method)
+	}
+}
+
+func TestLoadAuthAuthAll(t *testing.T) {
+	a := loadAuth(context.Background(), Opts{TokenFile: writeToken(t), AuthAll: true})
+	for _, method := range allMethods() {
+		assert.Error(t, a.AuthRPC(context.Background(), method), method)
+		assert.Error(t, a.AuthRPC(withToken("wrong"), method), method)
+		assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), method), method)
+	}
+}
+
+func TestLoadAuthConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "auth.yaml")
+	require.NoError(t, os.WriteFile(cfg, []byte(`
+roles:
+  reader:
+    permissions:
+      - cas:read
+    principals:
+      - anonymous
+  writer:
+    permissions:
+      - cas:read
+      - cas:write
+    principals:
+      - legacy
+static:
+  file: `+writeToken(t)), 0644))
+	// --auth_config takes precedence over the legacy flags.
+	a := loadAuth(context.Background(), Opts{AuthConfig: cfg, TokenFile: "/nonexistent", AuthAll: true})
+	assert.NoError(t, a.AuthRPC(context.Background(), bsRead))
+	assert.Error(t, a.AuthRPC(context.Background(), bsWrite))
+	assert.Error(t, a.AuthRPC(context.Background(), getActionResult))
+	assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), bsWrite))
+	assert.Error(t, a.AuthRPC(withToken("s3cr3t"), execute))
+}
+
+func TestAllRegisteredMethodsHavePermissions(t *testing.T) {
+	// With a token configured, unregistered methods are rejected, so this catches anything missing from the map.
+	a := loadAuth(context.Background(), Opts{TokenFile: writeToken(t), AuthAll: true})
+	for _, method := range allMethods() {
+		err := a.AuthRPC(withToken("s3cr3t"), method)
+		assert.NoError(t, err, method)
+	}
+}

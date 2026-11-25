@@ -2,8 +2,11 @@
 package auth
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -11,7 +14,9 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2"
 	"google.golang.org/api/idtoken"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,6 +34,8 @@ const (
 	GC           = "gc"
 	Reflection   = "reflection"
 	Health       = "health"
+	WorkersRead  = "workers:read"
+	WorkersWrite = "workers:write"
 )
 
 // The anonymous role
@@ -63,21 +70,24 @@ var authenticatedMethods = map[string]string{
 	"/build.bazel.remote.execution.v2.Execution/Execute":                              ExecuteWrite,
 	"/build.bazel.remote.execution.v2.Execution/WaitExecution":                        ExecuteRead,
 	"/build.please.remote.mettle.Bootstrap/ServeExecutions":                           Bootstrap,
-	"/build.please.remote.purity.GC/Info":                                             GC,
 	"/build.please.remote.purity.GC/List":                                             GC,
 	"/build.please.remote.purity.GC/Delete":                                           GC,
+	"/build.please.remote.lucidity.Lucidity/Update":                                   WorkersWrite,
+	"/build.please.remote.lucidity.Lucidity/ListWorkers":                              WorkersRead,
 	"/google.bytestream.ByteStream/QueryWriteStatus":                                  CASWrite,
 	"/google.bytestream.ByteStream/Read":                                              CASRead,
 	"/google.bytestream.ByteStream/Write":                                             CASWrite,
 	"/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo":                  Reflection,
 	"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo":                       Reflection,
 	"/grpc.health.v1.Health/Check":                                                    Health,
+	"/grpc.health.v1.Health/Watch":                                                    Health,
+	"/grpc.health.v1.Health/List":                                                     Health,
 }
 
 // A Config defines the authentication setup that a Mettle server accepts.
 type Config struct {
 	// Definitions of roles (map of role name -> details)
-	// Note that 'anonymous' is the role name that unauthorised users are given.
+	// Note that 'anonymous' is the principal name that unauthorised users are given.
 	Roles map[string]struct {
 		// The permissions this role gets
 		Permissions []string `yaml:"permissions"`
@@ -107,7 +117,9 @@ func LoadConfig(filename string) (*Config, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 	cfg := &Config{}
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil && err != io.EOF {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 	return cfg, nil
@@ -159,7 +171,7 @@ func NewAuthenticator(ctx context.Context, cfg *Config) (*Authenticator, error) 
 			return nil, err
 		}
 		auth.validator = validator
-		cache, _ := lru.New[string, *idtoken.Payload](max(cfg.Google.CacheSize, 1000))
+		cache, _ := lru.New[string, *idtoken.Payload](cmp.Or(cfg.Google.CacheSize, 1000))
 		auth.lruCache = cache
 	}
 	return auth, nil
@@ -174,22 +186,32 @@ func MustNewAuthenticator(ctx context.Context, cfg *Config) *Authenticator {
 	return auth
 }
 
-// AuthRPC returns nil if the given RPC is allowed to be called with this set of permissions, otherwise an error describing why not.
+// AuthRPC returns nil if the given RPC is allowed to be called with this set of permissions, otherwise a gRPC status error
+// describing why not: Unauthenticated if credentials are missing or invalid, PermissionDenied if they are insufficient.
+// A nil Authenticator permits all RPCs.
 func (auth *Authenticator) AuthRPC(ctx context.Context, method string) error {
+	if auth == nil {
+		return nil
+	}
 	required, present := authenticatedMethods[method]
 	if !present {
-		return fmt.Errorf("unregistered method %s", method)
+		return status.Errorf(codes.PermissionDenied, "unregistered method %s", method)
 	}
 	principal, err := auth.findPrincipal(ctx)
 	if err != nil {
-		return err
+		return status.Error(codes.Unauthenticated, err.Error())
+	}
+	// Anonymous callers get Unauthenticated so clients know that providing credentials may help.
+	code := codes.PermissionDenied
+	if principal == anonymous {
+		code = codes.Unauthenticated
 	}
 	permissions, present := auth.principals[principal]
 	if !present {
-		return fmt.Errorf("principal %s is not authorized", principal)
+		return status.Errorf(code, "principal %s is not authorized", principal)
 	}
 	if !slices.Contains(permissions, required) {
-		return fmt.Errorf("principal %s is not authorized to call %s (needs %s, has %v)", principal, method, required, permissions)
+		return status.Errorf(code, "principal %s is not authorized to call %s (needs %s, has %v)", principal, method, required, permissions)
 	}
 	return nil // Allowed!
 }

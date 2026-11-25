@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/idtoken"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 )
 
@@ -104,6 +106,34 @@ roles:
 `)
 	_, err := LoadConfig(cfgFile)
 	assert.ErrorContains(t, err, "failed to parse config")
+}
+
+func TestLoadConfigUnknownKey(t *testing.T) {
+	cfgFile := writeFile(t, t.TempDir(), "config.yaml", `
+roles:
+  builder:
+    permisions:
+      - cas:write
+`)
+	_, err := LoadConfig(cfgFile)
+	assert.ErrorContains(t, err, "failed to parse config")
+	assert.ErrorContains(t, err, "field permisions not found")
+}
+
+func TestLoadConfigUnknownTopLevelKey(t *testing.T) {
+	cfgFile := writeFile(t, t.TempDir(), "config.yaml", `
+gogle:
+  audience: aud
+`)
+	_, err := LoadConfig(cfgFile)
+	assert.ErrorContains(t, err, "field gogle not found")
+}
+
+func TestLoadConfigCommentsOnly(t *testing.T) {
+	cfgFile := writeFile(t, t.TempDir(), "config.yaml", "# nothing here\n")
+	cfg, err := LoadConfig(cfgFile)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Roles)
 }
 
 func TestMustLoadConfig(t *testing.T) {
@@ -335,5 +365,42 @@ func TestAuthRPCEmptyTokenIsNotLegacy(t *testing.T) {
 func TestAuthRPCPermissionDeniedMessage(t *testing.T) {
 	a := MustNewAuthenticator(context.Background(), testConfig(t, ""))
 	err := a.AuthRPC(context.Background(), "/google.bytestream.ByteStream/Write")
-	assert.EqualError(t, err, "principal anonymous is not authorized to call /google.bytestream.ByteStream/Write (needs cas:write, has [cas:read capabilities])")
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+	assert.Equal(t, "principal anonymous is not authorized to call /google.bytestream.ByteStream/Write (needs cas:write, has [cas:read capabilities])", status.Convert(err).Message())
+}
+
+func TestAuthRPCStatusCodes(t *testing.T) {
+	tokenFile := writeFile(t, t.TempDir(), "token", "s3cr3t")
+	a := MustNewAuthenticator(context.Background(), testConfig(t, tokenFile))
+	g := newGoogleAuthenticator(t, map[string]*idtoken.Payload{
+		"unknown": {Expires: time.Now().Add(time.Hour).Unix(), Claims: map[string]any{"email": "someone@example.com"}},
+	})
+	const read = "/google.bytestream.ByteStream/Read"
+	const write = "/google.bytestream.ByteStream/Write"
+	const execute = "/build.bazel.remote.execution.v2.Execution/Execute"
+	for name, tc := range map[string]struct {
+		auth   *Authenticator
+		ctx    context.Context
+		method string
+		code   codes.Code
+	}{
+		"allowed":                {a, withAuth("Bearer s3cr3t"), write, codes.OK},
+		"anonymous insufficient": {a, context.Background(), write, codes.Unauthenticated},
+		"wrong token":            {a, withAuth("Bearer wrong"), read, codes.Unauthenticated},
+		"not bearer":             {a, withAuth("Basic s3cr3t"), read, codes.Unauthenticated},
+		"multiple headers":       {a, withAuth("Bearer s3cr3t", "Bearer s3cr3t"), read, codes.Unauthenticated},
+		"legacy insufficient":    {a, withAuth("Bearer s3cr3t"), execute, codes.PermissionDenied},
+		"principal without role": {g, withAuth("Bearer unknown"), read, codes.PermissionDenied},
+		"unregistered method":    {a, withAuth("Bearer s3cr3t"), "/some.Service/Method", codes.PermissionDenied},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.code, status.Code(tc.auth.AuthRPC(tc.ctx, tc.method)))
+		})
+	}
+}
+
+func TestAuthRPCNilAuthenticator(t *testing.T) {
+	var a *Authenticator
+	assert.NoError(t, a.AuthRPC(context.Background(), "/google.bytestream.ByteStream/Write"))
+	assert.NoError(t, a.AuthRPC(withAuth("Bearer whatever"), "/some.Service/Method"))
 }

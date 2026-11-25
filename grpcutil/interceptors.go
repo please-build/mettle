@@ -9,11 +9,9 @@ import (
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
 
 	// Register the compressors on the server side.
 	_ "github.com/mostynb/go-grpc-compression/zstd"
@@ -50,8 +48,8 @@ type Opts struct {
 
 // NewServer creates a new gRPC server with a standard set of interceptors.
 // It opens the relevant port and returns a listener for it, but does not begin serving.
-func NewServer(ctx context.Context, opts Opts) (net.Listener, *grpc.Server) {
-	auth := loadAuth(ctx, opts)
+func NewServer(opts Opts) (net.Listener, *grpc.Server) {
+	auth := loadAuth(context.Background(), opts)
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
 	if err != nil {
 		log.Fatalf("Failed to listen on %s:%d: %v", opts.Host, opts.Port, err)
@@ -112,6 +110,8 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 						auth.GC,
 						auth.Reflection,
 						auth.Health,
+						auth.WorkersRead,
+						auth.WorkersWrite,
 					},
 					Principals: []string{
 						auth.LegacyPrincipal,
@@ -141,6 +141,8 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 						auth.GC,
 						auth.Reflection,
 						auth.Health,
+						auth.WorkersRead,
+						auth.WorkersWrite,
 					},
 					Principals: []string{
 						auth.LegacyPrincipal,
@@ -151,6 +153,7 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 						auth.CASRead,
 						auth.ACRead,
 						auth.ExecuteRead,
+						auth.Bootstrap,
 						auth.Capabilities,
 						auth.Reflection,
 						auth.Health,
@@ -165,39 +168,14 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 		return auth.MustNewAuthenticator(ctx, &cfg)
 	}
 
-	cfg := auth.Config{
-		Roles: map[string]struct {
-			Permissions []string `yaml:"permissions"`
-			Principals  []string `yaml:"principals"`
-		}{
-			auth.AnonymousRole: {
-				Permissions: []string{
-					auth.CASRead,
-					auth.CASWrite,
-					auth.ACRead,
-					auth.ACWrite,
-					auth.ExecuteRead,
-					auth.ExecuteWrite,
-					auth.Fetch,
-					auth.Bootstrap,
-					auth.Capabilities,
-					auth.GC,
-					auth.Reflection,
-					auth.Health,
-				},
-				Principals: []string{
-					auth.AnonymousPrincipal,
-				},
-			},
-		},
-	}
-	return auth.MustNewAuthenticator(ctx, &cfg)
+	// No auth configured; all RPCs are permitted.
+	return nil
 }
 
 func unaryAuthInterceptor(authenticator *auth.Authenticator) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if err := authenticator.AuthRPC(ctx, info.FullMethod); err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "%s", err)
+			return nil, err
 		}
 		return handler(ctx, req)
 	}
@@ -206,7 +184,7 @@ func unaryAuthInterceptor(authenticator *auth.Authenticator) grpc.UnaryServerInt
 func streamAuthInterceptor(authenticator *auth.Authenticator) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if err := authenticator.AuthRPC(ss.Context(), info.FullMethod); err != nil {
-			return status.Errorf(codes.Unauthenticated, "%s", err)
+			return err
 		}
 		return handler(srv, ss)
 	}

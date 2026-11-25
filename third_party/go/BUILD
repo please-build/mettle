@@ -3843,11 +3843,6 @@ go_repo(
 )
 
 go_repo(
-    module = "github.com/please-build/mettle",
-    version = "v6.3.8+incompatible",
-)
-
-go_repo(
     licences = ["Apache-2.0"],
     module = "cloud.google.com/go/profiler",
     version = "v0.6.0",
