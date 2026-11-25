@@ -3995,3 +3995,9 @@ go_repo(
     module = "github.com/yuin/gopher-lua",
     version = "v1.1.1",
 )
+
+go_repo(
+    licences = ["MPL-2.0"],
+    module = "github.com/hashicorp/golang-lru/v2",
+    version = "v2.0.7",
+)

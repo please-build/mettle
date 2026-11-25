@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/golang-lru/v2"
 	"google.golang.org/api/idtoken"
@@ -35,6 +36,14 @@ const anonymous = "anonymous"
 
 // The legacy static role
 const legacy = "legacy"
+
+// Temporary exports for backwards compat
+const (
+	AnonymousRole      = anonymous
+	LegacyRole         = legacy
+	AnonymousPrincipal = anonymous
+	LegacyPrincipal    = legacy
+)
 
 // Permissions required for each RPC
 var authenticatedMethods = map[string]string{
@@ -190,30 +199,36 @@ func (auth *Authenticator) findPrincipal(ctx context.Context) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return anonymous, nil
-	} else if hdr, present := md["authorization"]; !present {
+	}
+	hdr, present := md["authorization"]
+	if !present {
 		return anonymous, nil
 	} else if len(hdr) != 1 {
-		return nil, fmt.Errorf("must provide exactly 1 authorization header (was %d)", len(hdr))
+		return "", fmt.Errorf("must provide exactly 1 authorization header (was %d)", len(hdr))
 	}
 	tok, ok := strings.CutPrefix(hdr[0], "Bearer ")
 	if !ok {
-		return nil, fmt.Errorf("not a bearer token")
+		return "", fmt.Errorf("not a bearer token")
 	}
 	if tok == auth.token {
 		return legacy, nil
 	}
 	if auth.validator == nil {
-		return nil, fmt.Errorf("no validator configured")
+		return "", fmt.Errorf("no validator configured")
 	}
 	payload, err := auth.validateIDToken(ctx, tok)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	email, present := payload.Claims["email"]
 	if !present {
-		return nil, fmt.Errorf("missing email claim")
+		return "", fmt.Errorf("missing email claim")
 	}
-	return email, nil
+	s, ok := email.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid type for email claim (was %T)", email)
+	}
+	return s, nil
 }
 
 // validateIDToken validates an incoming ID token, possibly using a cached version.
@@ -226,7 +241,7 @@ func (auth *Authenticator) validateIDToken(ctx context.Context, token string) (*
 		}
 		return payload, nil
 	}
-	payload, err := auth.validator.Validate(ctx, tok, auth.config.Google.Audience)
+	payload, err := auth.validator.Validate(ctx, token, auth.config.Google.Audience)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate token: %w", err)
 	}
