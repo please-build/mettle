@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
+var testEncoder = mustNewEncoder(nil)
+
 // expectedBRBResponse is what BatchReadBlobs should return for one requested digest.
 type expectedBRBResponse struct {
 	digest     *pb.Digest
@@ -31,7 +33,7 @@ func makeExpectedBRBResponses(kind blobKind, count int, code codes.Code, compres
 		if code == codes.OK {
 			r.data = blobData(kind, i)
 			if compressor == pb.Compressor_ZSTD {
-				r.data = defaultEncoder.EncodeAll(r.data, nil)
+				r.data = testEncoder.EncodeAll(r.data, nil)
 			}
 		}
 		responses = append(responses, r)

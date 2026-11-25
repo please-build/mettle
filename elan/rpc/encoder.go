@@ -13,5 +13,3 @@ func mustNewEncoder(w io.Writer) *zstd.Encoder {
 	}
 	return enc
 }
-
-var defaultEncoder = mustNewEncoder(nil)
