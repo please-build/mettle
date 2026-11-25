@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
-	"strings"
 
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
@@ -14,7 +12,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
@@ -62,18 +59,18 @@ func NewServer(ctx context.Context, opts Opts) (net.Listener, *grpc.Server) {
 	log.Notice("Listening on %s:%d", opts.Host, opts.Port)
 
 	s := grpc.NewServer(OptionalTLS(opts.KeyFile, opts.CertFile, opts.TLSMinVersion,
-		grpc.ChainUnaryInterceptor([]grpc.UnaryServerInterceptor{
+		grpc.ChainUnaryInterceptor(
 			LogUnaryRequests,
 			serverMetrics.UnaryServerInterceptor(),
 			grpc_recovery.UnaryServerInterceptor(),
 			unaryAuthInterceptor(auth),
-		}),
-		grpc.ChainStreamInterceptor([]grpc.StreamServerInterceptor{
+		),
+		grpc.ChainStreamInterceptor(
 			LogStreamRequests,
 			serverMetrics.StreamServerInterceptor(),
 			grpc_recovery.StreamServerInterceptor(),
 			streamAuthInterceptor(auth),
-		}),
+		),
 		grpc.MaxRecvMsgSize(419430400), // 400MB
 		grpc.MaxSendMsgSize(419430400),
 	)...)
@@ -89,11 +86,11 @@ func NewServer(ctx context.Context, opts Opts) (net.Listener, *grpc.Server) {
 func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 	if opts.AuthConfig != "" {
 		cfg := auth.MustLoadConfig(opts.AuthConfig)
-		return auth.MustNewAuthenticator(ctx, &cfg)
+		return auth.MustNewAuthenticator(ctx, cfg)
 	}
 	// Various legacy setups
 	if opts.AuthAll {
-		if opts.TokenFile != "" {
+		if opts.TokenFile == "" {
 			log.Fatalf("Cannot specify --auth_all without --token_file")
 		}
 		cfg := auth.Config{
@@ -124,7 +121,7 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 		}
 		cfg.Static.File = opts.TokenFile
 		return auth.MustNewAuthenticator(ctx, &cfg)
-	} else if opts.TokenFile {
+	} else if opts.TokenFile != "" {
 		cfg := auth.Config{
 			Roles: map[string]struct {
 				Permissions []string `yaml:"permissions"`
@@ -194,23 +191,22 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 			},
 		},
 	}
-	cfg.Static.File = opts.TokenFile
 	return auth.MustNewAuthenticator(ctx, &cfg)
 }
 
 func unaryAuthInterceptor(authenticator *auth.Authenticator) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if err := authenticator.AuthRPC(ctx, info.FullMethod); err != nil {
-			return nil, err
+			return nil, status.Errorf(codes.Unauthenticated, "%s", err)
 		}
 		return handler(ctx, req)
 	}
 }
 
-func streamAuthInterceptor(opts Opts) grpc.StreamServerInterceptor {
+func streamAuthInterceptor(authenticator *auth.Authenticator) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := authenticator.AuthRPC(ctx, info.FullMethod); err != nil {
-			return nil, err
+		if err := authenticator.AuthRPC(ss.Context(), info.FullMethod); err != nil {
+			return status.Errorf(codes.Unauthenticated, "%s", err)
 		}
 		return handler(srv, ss)
 	}

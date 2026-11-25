@@ -7,6 +7,7 @@ go_library(
         "///third_party/go/google.golang.org_grpc//metadata",
         "///third_party/go/gopkg.in_yaml.v3//:yaml.v3",
     ],
+    visibility = ["PUBLIC"],
 )
 
 go_test(
@@ -16,5 +17,8 @@ go_test(
         ":auth",
         "///third_party/go/github.com_stretchr_testify//assert",
         "///third_party/go/github.com_stretchr_testify//require",
+        "///third_party/go/google.golang.org_api//idtoken",
+        "///third_party/go/google.golang.org_grpc//metadata",
+        "///third_party/go/gopkg.in_yaml.v3//:yaml.v3",
     ],
 )

@@ -189,7 +189,7 @@ func (auth *Authenticator) AuthRPC(ctx context.Context, method string) error {
 		return fmt.Errorf("principal %s is not authorized", principal)
 	}
 	if !slices.Contains(permissions, required) {
-		return fmt.Errorf("principal %s is not authorized to call %s (needs %s, has %v)", principal, required, permissions)
+		return fmt.Errorf("principal %s is not authorized to call %s (needs %s, has %v)", principal, method, required, permissions)
 	}
 	return nil // Allowed!
 }
@@ -210,7 +210,7 @@ func (auth *Authenticator) findPrincipal(ctx context.Context) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("not a bearer token")
 	}
-	if tok == auth.token {
+	if auth.token != "" && tok == auth.token {
 		return legacy, nil
 	}
 	if auth.validator == nil {
