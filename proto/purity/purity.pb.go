@@ -407,7 +407,7 @@ const file_proto_purity_purity_proto_rawDesc = "" +
 	"\x0eDeleteResponse2\xc0\x01\n" +
 	"\x02GC\x12Y\n" +
 	"\x04List\x12'.build.please.remote.purity.ListRequest\x1a(.build.please.remote.purity.ListResponse\x12_\n" +
-	"\x06Delete\x12).build.please.remote.purity.DeleteRequest\x1a*.build.please.remote.purity.DeleteResponseB8Z6github.com/thought-machine/please-servers/proto/purityb\x06proto3"
+	"\x06Delete\x12).build.please.remote.purity.DeleteRequest\x1a*.build.please.remote.purity.DeleteResponseB8Z6github.com/please-build/mettle/proto/purityb\x06proto3"
 
 var (
 	file_proto_purity_purity_proto_rawDescOnce sync.Once

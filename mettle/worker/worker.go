@@ -44,14 +44,14 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	mettlecli "github.com/thought-machine/please-servers/cli"
-	elan "github.com/thought-machine/please-servers/elan/rpc"
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/mettle/common"
-	lpb "github.com/thought-machine/please-servers/proto/lucidity"
-	"github.com/thought-machine/please-servers/rexclient"
-	bbcas "github.com/thought-machine/please-servers/third_party/proto/cas"
-	bbru "github.com/thought-machine/please-servers/third_party/proto/resourceusage"
+	mettlecli "github.com/please-build/mettle/cli"
+	elan "github.com/please-build/mettle/elan/rpc"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/mettle/common"
+	lpb "github.com/please-build/mettle/proto/lucidity"
+	"github.com/please-build/mettle/rexclient"
+	bbcas "github.com/please-build/mettle/third_party/proto/cas"
+	bbru "github.com/please-build/mettle/third_party/proto/resourceusage"
 )
 
 var log = logging.MustGetLogger()

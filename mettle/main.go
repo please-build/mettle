@@ -13,12 +13,12 @@ import (
 	"github.com/peterebden/go-cli-init/v4/logging"
 	"github.com/sirupsen/logrus"
 
-	"github.com/thought-machine/please-servers/cli"
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/mettle/api"
-	"github.com/thought-machine/please-servers/mettle/common"
-	"github.com/thought-machine/please-servers/mettle/worker"
-	"github.com/thought-machine/please-servers/redis"
+	"github.com/please-build/mettle/cli"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/mettle/api"
+	"github.com/please-build/mettle/mettle/common"
+	"github.com/please-build/mettle/mettle/worker"
+	"github.com/please-build/mettle/redis"
 )
 
 var log = logging.MustGetLogger()

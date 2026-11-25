@@ -4,10 +4,10 @@ package main
 import (
 	"github.com/peterebden/go-cli-init/v4/flags"
 
-	"github.com/thought-machine/please-servers/cli"
-	"github.com/thought-machine/please-servers/elan/rpc"
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/redis"
+	"github.com/please-build/mettle/cli"
+	"github.com/please-build/mettle/elan/rpc"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/redis"
 )
 
 var opts = struct {

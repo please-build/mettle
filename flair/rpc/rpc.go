@@ -28,10 +28,10 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/thought-machine/please-servers/flair/trie"
-	"github.com/thought-machine/please-servers/grpcutil"
-	ppb "github.com/thought-machine/please-servers/proto/purity"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/flair/trie"
+	"github.com/please-build/mettle/grpcutil"
+	ppb "github.com/please-build/mettle/proto/purity"
+	"github.com/please-build/mettle/rexclient"
 )
 
 var log = logging.MustGetLogger()

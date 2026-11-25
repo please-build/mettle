@@ -1,4 +1,4 @@
-module github.com/thought-machine/please-servers
+module github.com/please-build/mettle
 
 go 1.27.3
 

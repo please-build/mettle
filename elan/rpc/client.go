@@ -7,7 +7,7 @@ import (
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/uploadinfo"
 	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/rexclient"
 	hpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 

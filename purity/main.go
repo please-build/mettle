@@ -9,8 +9,8 @@ import (
 	"github.com/peterebden/go-cli-init/v4/flags"
 	"github.com/peterebden/go-cli-init/v4/logging"
 
-	"github.com/thought-machine/please-servers/cli"
-	"github.com/thought-machine/please-servers/purity/gc"
+	"github.com/please-build/mettle/cli"
+	"github.com/please-build/mettle/purity/gc"
 )
 
 var log = logging.MustGetLogger()

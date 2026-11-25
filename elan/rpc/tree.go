@@ -7,7 +7,7 @@ import (
 	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/hashicorp/go-multierror"
 
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/rexclient"
 )
 
 // getTree returns a channel to iterate over all the directories recursively under the given one.

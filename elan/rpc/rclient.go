@@ -13,7 +13,7 @@ import (
 	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	hpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/rexclient"
 )
 
 var rpcLatencies = prometheus.NewSummaryVec(prometheus.SummaryOpts{

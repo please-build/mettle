@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package build.please.remote.purity;
 
-option go_package = "github.com/thought-machine/please-servers/proto/purity";
+option go_package = "github.com/please-build/mettle/proto/purity";
 
 // The GC service provides an API for storage servers to report on their
 // current status (free storage capacity and management of existing blobs).

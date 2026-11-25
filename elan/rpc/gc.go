@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	ppb "github.com/thought-machine/please-servers/proto/purity"
+	ppb "github.com/please-build/mettle/proto/purity"
 )
 
 func (s *server) List(ctx context.Context, req *ppb.ListRequest) (*ppb.ListResponse, error) {

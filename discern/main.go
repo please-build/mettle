@@ -15,9 +15,9 @@ import (
 	"github.com/peterebden/go-cli-init/v4/logging"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/thought-machine/please-servers/cli"
-	"github.com/thought-machine/please-servers/purity/gc"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/cli"
+	"github.com/please-build/mettle/purity/gc"
+	"github.com/please-build/mettle/rexclient"
 )
 
 var log = logging.MustGetLogger()

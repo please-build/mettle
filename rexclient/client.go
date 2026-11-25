@@ -7,7 +7,7 @@ import (
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/client"
 	"github.com/peterebden/go-cli-init/v4/logging"
 
-	"github.com/thought-machine/please-servers/grpcutil"
+	"github.com/please-build/mettle/grpcutil"
 )
 
 var log = logging.MustGetLogger()

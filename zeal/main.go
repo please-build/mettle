@@ -6,9 +6,9 @@ import (
 
 	"strings"
 
-	"github.com/thought-machine/please-servers/cli"
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/zeal/rpc"
+	"github.com/please-build/mettle/cli"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/zeal/rpc"
 )
 
 var log = cli.MustGetLogger()

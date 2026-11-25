@@ -23,7 +23,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/thought-machine/please-servers/mettle/mempubsub" // Register our custom mempubsub scheme
+	"github.com/please-build/mettle/mettle/mempubsub" // Register our custom mempubsub scheme
 	_ "gocloud.dev/pubsub/gcppubsub"                             // And gocloud's gcppubsub provider
 )
 

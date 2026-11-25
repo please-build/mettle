@@ -15,7 +15,7 @@ preloadsubincludes = ///proto//build_defs:proto
 
 [plugin "go"]
 target = //plugins:go
-importpath = github.com/thought-machine/please-servers
+importpath = github.com/please-build/mettle
 gotool = //third_party/go:toolchain|go
 stdlib = //third_party/go:std
 coverageredesign = true

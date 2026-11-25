@@ -11,7 +11,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/thought-machine/please-servers/grpcutil"
+	"github.com/please-build/mettle/grpcutil"
 	bs "google.golang.org/genproto/googleapis/bytestream"
 )
 

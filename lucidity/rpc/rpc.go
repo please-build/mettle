@@ -15,8 +15,8 @@ import (
 	"github.com/peterebden/go-cli-init/v4/logging"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/thought-machine/please-servers/grpcutil"
-	pb "github.com/thought-machine/please-servers/proto/lucidity"
+	"github.com/please-build/mettle/grpcutil"
+	pb "github.com/please-build/mettle/proto/lucidity"
 )
 
 var log = logging.MustGetLogger()

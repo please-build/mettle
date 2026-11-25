@@ -11,8 +11,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 
-	elan "github.com/thought-machine/please-servers/elan/rpc"
-	rediscommon "github.com/thought-machine/please-servers/redis"
+	elan "github.com/please-build/mettle/elan/rpc"
+	rediscommon "github.com/please-build/mettle/redis"
 )
 
 var redisHits = prometheus.NewCounter(prometheus.CounterOpts{

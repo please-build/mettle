@@ -32,8 +32,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/rexclient"
 )
 
 var log = logging.MustGetLogger()

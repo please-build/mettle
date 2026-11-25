@@ -19,9 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	elan "github.com/thought-machine/please-servers/elan/rpc"
-	"github.com/thought-machine/please-servers/grpcutil"
-	"github.com/thought-machine/please-servers/rexclient"
+	elan "github.com/please-build/mettle/elan/rpc"
+	"github.com/please-build/mettle/grpcutil"
+	"github.com/please-build/mettle/rexclient"
 )
 
 const elanPort = 17791

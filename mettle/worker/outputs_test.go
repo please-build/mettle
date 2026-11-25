@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/thought-machine/please-servers/rexclient"
+	"github.com/please-build/mettle/rexclient"
 )
 
 func TestSetRootDirectoryDigests(t *testing.T) {
