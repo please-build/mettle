@@ -166,8 +166,8 @@ type Opts struct {
 }
 
 // ServeForever serves on the given port until terminated.
-func ServeForever(opts Opts) {
-	s, lis, err := serve(opts)
+func ServeForever(ctx context.Context, opts Opts) {
+	s, lis, err := serve(ctx, opts)
 	if err != nil {
 		log.Fatalf("Failed to start API server: %s", err)
 	}
@@ -203,7 +203,7 @@ func mergeRequestQueues(requestQueue string, extraRequestQueues map[string]strin
 	return urls, nil
 }
 
-func serve(opts Opts) (*grpc.Server, net.Listener, error) {
+func serve(ctx context.Context, opts Opts) (*grpc.Server, net.Listener, error) {
 	name := opts.Name
 	if name == "" {
 		name = "mettle API server"
@@ -221,14 +221,14 @@ func serve(opts Opts) (*grpc.Server, net.Listener, error) {
 	}
 
 	log.Notice("Contacting CAS server on %s...", opts.StorageURL)
-	client, err := rexclient.New(name, opts.StorageURL, opts.StorageTLS, "")
+	client, err := rexclient.New(ctx, name, opts.StorageURL, opts.StorageTLS, "")
 	if err != nil {
 		return nil, nil, err
 	}
 
 	requestsMap := make(map[string]*pubsub.Topic, len(requestURLs))
 	for queueName, url := range requestURLs {
-		requestsMap[queueName] = common.MustOpenTopic(url)
+		requestsMap[queueName] = common.MustOpenTopic(ctx, url)
 	}
 
 	// Worker types are routed by the worker-type platform property. When platform validation is enabled, permit it
@@ -249,8 +249,8 @@ func serve(opts Opts) (*grpc.Server, net.Listener, error) {
 	srv := &server{
 		name:             name,
 		requests:         requestsMap,
-		responses:        common.MustOpenSubscription(subscriptionURL, queueOpts.SubscriptionBatchSize),
-		preResponses:     common.MustOpenTopic(queueOpts.PreResponseQueue),
+		responses:        common.MustOpenSubscription(ctx, subscriptionURL, queueOpts.SubscriptionBatchSize),
+		preResponses:     common.MustOpenTopic(ctx, queueOpts.PreResponseQueue),
 		jobs:             map[string]*job{},
 		completed:        map[string]time.Time{},
 		publishTime:      common.PublishTime,
@@ -280,13 +280,13 @@ func serve(opts Opts) (*grpc.Server, net.Listener, error) {
 		log.Notice("    %s: %s", k, strings.Join(v, ", "))
 	}
 
-	if jobs, err := getExecutions(opts.GRPC, opts.APIURL, opts.APITLS); err != nil {
+	if jobs, err := getExecutions(ctx, opts.GRPC, opts.APIURL, opts.APITLS); err != nil {
 		log.Warningf("Failed to get inflight executions: %s", err)
 	} else if len(jobs) > 0 {
 		srv.jobs = jobs
 		log.Notice("Updated server with %d inflight executions", len(srv.jobs))
 	}
-	go srv.Receive()
+	go srv.Receive(ctx)
 	go srv.periodicallyDeleteJobs()
 
 	lis, s := grpcutil.NewServer(opts.GRPC)
@@ -339,7 +339,7 @@ func (s *server) ServeExecutions(ctx context.Context, req *bpb.ServeExecutionsRe
 }
 
 // getExecutions requests a list of currently executing jobs over grpc
-func getExecutions(opts grpcutil.Opts, apiURL string, connTLS bool) (map[string]*job, error) {
+func getExecutions(ctx context.Context, opts grpcutil.Opts, apiURL string, connTLS bool) (map[string]*job, error) {
 	if apiURL == "" {
 		log.Notice("No API URL provided, will not request inflight executions")
 		return map[string]*job{}, nil
@@ -352,7 +352,7 @@ func getExecutions(opts grpcutil.Opts, apiURL string, connTLS bool) (map[string]
 	client := bpb.NewBootstrapClient(conn)
 	log.Debug("Requesting inflight executions...")
 	req := &bpb.ServeExecutionsRequest{}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	res, err := client.ServeExecutions(ctx, req)
 	if err != nil {
@@ -391,7 +391,7 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 	if req.ActionDigest == nil {
 		return status.Errorf(codes.InvalidArgument, "Action digest not specified")
 	}
-	platform, err := s.validatePlatform(req)
+	platform, err := s.validatePlatform(stream.Context(), req)
 	if err != nil {
 		return err
 	}
@@ -424,7 +424,7 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 		if err := stream.Send(common.BuildOperation(pb.ExecutionStage_CACHE_CHECK, req.ActionDigest, nil, nil)); err != nil {
 			log.Warningf("Failed to forward to stream: %s", err)
 		}
-		if ar, err := s.client.CheckActionCache(context.Background(), req.ActionDigest); err != nil {
+		if ar, err := s.client.CheckActionCache(stream.Context(), req.ActionDigest); err != nil {
 			log.Warning("Failed to check action cache: %s", err)
 		} else if ar != nil {
 			return stream.Send(common.BuildOperation(pb.ExecutionStage_COMPLETED, req.ActionDigest, &pb.ExecuteResponse{
@@ -443,7 +443,7 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 	// Submit the request before telling anyone else about it; if it fails we must not leave a job behind that
 	// looks like it's queued, since anyone resuming it would wait forever for an execution that will never happen.
 	b, _ := proto.Marshal(req)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(stream.Context(), timeout)
 	defer cancel()
 	if err := topic.Send(ctx, &pubsub.Message{
 		Body:     b,
@@ -461,7 +461,7 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 	// Dispatch a pre-emptive response message to let our colleagues know we've queued it.
 	// We will also receive & forward this message.
 	b = common.MarshalOperation(pb.ExecutionStage_QUEUED, req.ActionDigest, nil, nil)
-	ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	ctx, cancel = context.WithTimeout(stream.Context(), timeout)
 	defer cancel()
 	preResponseStartTime := time.Now()
 	if err := common.PublishWithOrderingKey(ctx, s.preResponses, b, req.ActionDigest.Hash, s.name); err != nil {
@@ -604,14 +604,17 @@ func (s *server) stopStream(digest *pb.Digest, ch <-chan *longrunning.Operation)
 }
 
 // Receive runs forever, receiving responses from the queue.
-func (s *server) Receive() {
+func (s *server) Receive(ctx context.Context) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < s.numPollers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for {
-				msg, err := s.responses.Receive(context.Background())
+				msg, err := s.responses.Receive(ctx)
+				if ctx.Err() != nil {
+					return
+				}
 				if err != nil {
 					log.Errorf("Failed to receive message: %s", err)
 					// TODO(xander): Add an unhealthiness channel here so partial degradation can be reported within Mettle
@@ -624,6 +627,9 @@ func (s *server) Receive() {
 		}()
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
 	log.Fatalf("All pollers failed, exiting")
 }
 
@@ -780,9 +786,9 @@ func shouldDeleteJob(digest string, j *job) bool {
 
 // validatePlatform fetches the platform requirements for this request and, if configured, checks them.
 // It returns the requested platform properties, which are also used to route the request to a queue.
-func (s *server) validatePlatform(req *pb.ExecuteRequest) (map[string]string, error) {
+func (s *server) validatePlatform(ctx context.Context, req *pb.ExecuteRequest) (map[string]string, error) {
 	action := &pb.Action{}
-	if _, err := s.client.ReadProto(context.Background(), digest.NewFromProtoUnvalidated(req.ActionDigest), action); err != nil {
+	if _, err := s.client.ReadProto(ctx, digest.NewFromProtoUnvalidated(req.ActionDigest), action); err != nil {
 		return nil, err
 	}
 	if action.Platform == nil {

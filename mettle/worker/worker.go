@@ -195,26 +195,26 @@ type Opts struct {
 }
 
 // RunForever runs the worker, receiving jobs until terminated.
-func RunForever(opts Opts) {
-	err := runForever(opts)
+func RunForever(ctx context.Context, opts Opts) {
+	err := runForever(ctx, opts)
 	log.Fatalf("Failed to run: %s", err)
 }
 
 // RunOne runs one single request, returning any error received.
 // The queues and resource limits in opts are overridden since only a single local task is run.
-func RunOne(opts Opts, digest *pb.Digest) error {
+func RunOne(ctx context.Context, opts Opts, digest *pb.Digest) error {
 	opts.RequestQueue = "mem://requests"
 	opts.ResponseQueue = "mem://responses"
 	opts.MaxCacheSize = 0
 	opts.MinDiskSpace = math.MaxInt64
 	opts.MemoryThreshold = 100.0
 	// Must create this to submit on first
-	topic := common.MustOpenTopic(opts.RequestQueue)
-	w, err := initialiseWorker(opts)
+	topic := common.MustOpenTopic(ctx, opts.RequestQueue)
+	w, err := initialiseWorker(ctx, opts)
 	if err != nil {
 		return err
 	}
-	defer w.ShutdownQueues()
+	defer w.ShutdownQueues(ctx)
 
 	logr.WithFields(logrus.Fields{
 		"hash": digest.Hash,
@@ -223,14 +223,14 @@ func RunOne(opts Opts, digest *pb.Digest) error {
 		InstanceName: opts.InstanceName,
 		ActionDigest: digest,
 	})
-	if err := topic.Send(context.Background(), &pubsub.Message{Body: b}); err != nil {
+	if err := topic.Send(ctx, &pubsub.Message{Body: b}); err != nil {
 		log.Fatalf("Failed to submit job to internal queue: %s", err)
 	}
 	logr.WithFields(logrus.Fields{
 		"hash": digest.Hash,
 	}).Info("Queued task")
 
-	if response, err := w.RunTask(context.Background()); err != nil {
+	if response, err := w.RunTask(ctx); err != nil {
 		return fmt.Errorf("Failed to run task: %s", err)
 	} else if response.Result == nil {
 		return fmt.Errorf("Execution unsuccessful: %s", response.Status)
@@ -243,22 +243,22 @@ func RunOne(opts Opts, digest *pb.Digest) error {
 	return nil
 }
 
-func runForever(opts Opts) error {
-	w, err := initialiseWorker(opts)
+func runForever(ctx context.Context, opts Opts) error {
+	w, err := initialiseWorker(ctx, opts)
 	if err != nil {
 		return err
 	}
-	defer w.ShutdownQueues()
+	defer w.ShutdownQueues(ctx)
 
 	if opts.PreflightAction {
-		if err := w.runPreflightAction(); err != nil {
+		if err := w.runPreflightAction(ctx); err != nil {
 			return err
 		}
 	}
 
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGTERM)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		sig := <-ch
 		if opts.ImmediateShutdown {
@@ -283,7 +283,7 @@ func runForever(opts Opts) error {
 	defer t.Stop()
 	for {
 		w.waitForFreeResources()
-		w.waitForLiveConnection()
+		w.waitForLiveConnection(ctx)
 		w.waitIfDisabled()
 
 		// Run the connectivity check if the period has expired
@@ -314,7 +314,7 @@ func runForever(opts Opts) error {
 	}
 }
 
-func initialiseWorker(opts Opts) (*worker, error) {
+func initialiseWorker(ctx context.Context, opts Opts) (*worker, error) {
 	// Make sure we have a directory to run in
 	if err := os.MkdirAll(opts.Dir, os.ModeDir|0755); err != nil {
 		return nil, fmt.Errorf("Failed to create working directory: %s", err)
@@ -353,7 +353,7 @@ func initialiseWorker(opts Opts) (*worker, error) {
 			return nil, fmt.Errorf("Error checking sandbox tool: %s", err)
 		}
 	}
-	client, err := elan.New(opts.Storage, opts.SecureStorage, opts.TokenFile)
+	client, err := elan.New(ctx, opts.Storage, opts.SecureStorage, opts.TokenFile)
 	if err != nil {
 		return nil, err
 	}
@@ -368,8 +368,8 @@ func initialiseWorker(opts Opts) (*worker, error) {
 	}
 
 	w := &worker{
-		requests:        common.MustOpenSubscription(opts.RequestQueue, 1),
-		responses:       common.MustOpenTopic(opts.ResponseQueue),
+		requests:        common.MustOpenSubscription(ctx, opts.RequestQueue, 1),
+		responses:       common.MustOpenTopic(ctx, opts.ResponseQueue),
 		ackExtension:    opts.AckExtension,
 		client:          client,
 		rclient:         rexclient.Uninitialised(),
@@ -429,7 +429,7 @@ func initialiseWorker(opts Opts) (*worker, error) {
 			return nil, fmt.Errorf("Failed to dial Lucidity server: %s", err)
 		}
 		w.lucidity = lpb.NewLucidityClient(conn)
-		go w.sendReports()
+		go w.sendReports(ctx)
 	}
 	for name, cost := range opts.Costs {
 		w.costs[name] = &bbru.MonetaryResourceUsage_Expense{Currency: cost.Denomination, Cost: cost.Amount}
@@ -490,9 +490,11 @@ type worker struct {
 }
 
 // ShutdownQueues shuts down the internal topic & subscription when done.
-func (w *worker) ShutdownQueues() {
+func (w *worker) ShutdownQueues(ctx context.Context) {
 	log.Notice("Shutting down queues")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// context.WithoutCancel is defensive to ensure the graceful shutdown can be completed even if
+	// the parent context is cancelled.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	if err := w.responses.Shutdown(ctx); err != nil {
 		log.Warning("Failed to shut down topic: %s", err)
@@ -511,11 +513,14 @@ func (w *worker) RunTask(ctx context.Context) (*pb.ExecuteResponse, error) {
 		log.Error("Error receiving message: %s", err)
 		return nil, err
 	}
+	// A shutdown signal only stops us receiving new tasks; an in-progress one runs to completion.
+	// Make sure the context we're using doesn't get cancelled while we're still working.
+	ctx = context.WithoutCancel(ctx)
 	w.currentMsg = msg
 	w.downloadedBytes = 0
 	w.cachedBytes = 0
-	response := w.runTask(msg)
-	if err = w.update(pb.ExecutionStage_COMPLETED, response); err != nil {
+	response := w.runTask(ctx, msg)
+	if err = w.update(ctx, pb.ExecutionStage_COMPLETED, response); err != nil {
 		msg.Nack()
 		nackedMessages.Inc()
 	} else {
@@ -534,7 +539,7 @@ func (w *worker) receiveTask(ctx context.Context) (*pubsub.Message, error) {
 		if err == context.DeadlineExceeded {
 			log.Debug("Task receive timed out, retrying...")
 			w.waitForFreeResources()
-			w.waitForLiveConnection()
+			w.waitForLiveConnection(ctx)
 			w.waitIfDisabled()
 			continue
 		}
@@ -549,9 +554,9 @@ func (w *worker) receiveOne(ctx context.Context) (*pubsub.Message, error) {
 }
 
 // runTask does the actual running of a task.
-func (w *worker) runTask(msg *pubsub.Message) *pb.ExecuteResponse {
+func (w *worker) runTask(ctx context.Context, msg *pubsub.Message) *pb.ExecuteResponse {
 	if w.ackExtension > 0 {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		go w.extendAckDeadline(ctx, msg)
 	}
@@ -563,11 +568,11 @@ func (w *worker) runTask(msg *pubsub.Message) *pb.ExecuteResponse {
 			Status: status(err, codes.FailedPrecondition, "Badly serialised request: %s", err),
 		}
 	}
-	return w.runTaskRequest(req)
+	return w.runTaskRequest(ctx, req)
 }
 
 // runTaskRequest runs a task from a proto request
-func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
+func (w *worker) runTaskRequest(ctx context.Context, req *pb.ExecuteRequest) *pb.ExecuteResponse {
 	totalBuilds.Inc()
 	currentBuilds.WithLabelValues(w.instanceName).Inc()
 	defer currentBuilds.WithLabelValues(w.instanceName).Dec()
@@ -582,7 +587,7 @@ func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
 	}).Debug("Received task for action digest")
 	w.lastURL = w.actionURL()
 
-	action, command, status := w.fetchRequestBlobs(req)
+	action, command, status := w.fetchRequestBlobs(ctx, req)
 	if status != nil {
 		log.Error("Bad request: %s", status)
 		return &pb.ExecuteResponse{
@@ -590,7 +595,7 @@ func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
 			Status: status,
 		}
 	}
-	if status := w.prepareDir(action, command); status != nil {
+	if status := w.prepareDir(ctx, action, command); status != nil {
 		logr.WithFields(logrus.Fields{
 			"hash":   w.actionDigest.Hash,
 			"status": status,
@@ -599,13 +604,13 @@ func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
 			ExitCode:          255, // Not really but shouldn't look like it was successful
 			ExecutionMetadata: w.metadata,
 		}
-		status.Message += w.writeUncachedResult(ar, status.Message)
+		status.Message += w.writeUncachedResult(ctx, ar, status.Message)
 		return &pb.ExecuteResponse{
 			Result: ar,
 			Status: status,
 		}
 	}
-	return w.execute(req, action, command)
+	return w.execute(ctx, req, action, command)
 }
 
 // forceShutdown sends any shutdown reports and calls log.Fatal() to shut down the worker
@@ -669,12 +674,12 @@ func (w *worker) extendAckDeadlineOnce(ctx context.Context, client *psraw.Subscr
 }
 
 // fetchRequestBlobs fetches and unmarshals the action and command for an execution request.
-func (w *worker) fetchRequestBlobs(req *pb.ExecuteRequest) (*pb.Action, *pb.Command, *rpcstatus.Status) {
+func (w *worker) fetchRequestBlobs(ctx context.Context, req *pb.ExecuteRequest) (*pb.Action, *pb.Command, *rpcstatus.Status) {
 	action := &pb.Action{}
 	command := &pb.Command{}
-	if err := w.readBlobToProto(req.ActionDigest, action); err != nil {
+	if err := w.readBlobToProto(ctx, req.ActionDigest, action); err != nil {
 		return nil, nil, status(err, codes.FailedPrecondition, "Invalid action digest %s/%d: %s", req.ActionDigest.Hash, req.ActionDigest.SizeBytes, err)
-	} else if err := w.readBlobToProto(action.CommandDigest, command); err != nil {
+	} else if err := w.readBlobToProto(ctx, action.CommandDigest, command); err != nil {
 		return nil, nil, status(err, codes.FailedPrecondition, "Invalid command digest %s/%d: %s", action.CommandDigest.Hash, action.CommandDigest.SizeBytes, err)
 	} else if err := common.CheckOutputPaths(command); err != nil {
 		return nil, nil, status(err, codes.InvalidArgument, "Invalid command outputs: %s", err)
@@ -683,32 +688,32 @@ func (w *worker) fetchRequestBlobs(req *pb.ExecuteRequest) (*pb.Action, *pb.Comm
 }
 
 // prepareDir prepares the directory for executing this request.
-func (w *worker) prepareDir(action *pb.Action, command *pb.Command) *rpcstatus.Status {
-	if status := w.prepareDirWithPacks(action, command, true); status != nil {
+func (w *worker) prepareDir(ctx context.Context, action *pb.Action, command *pb.Command) *rpcstatus.Status {
+	if status := w.prepareDirWithPacks(ctx, action, command, true); status != nil {
 		logr.WithFields(logrus.Fields{
 			"hash":   w.actionDigest.Hash,
 			"status": status,
 		}).Warn("Failed to prepare directory with packs, falling back to without")
-		return w.prepareDirWithPacks(action, command, false)
+		return w.prepareDirWithPacks(ctx, action, command, false)
 	}
 	return nil
 }
 
 // prepareDirWithPacks is like prepareDir but optionally uses pack files to optimise the download.
-func (w *worker) prepareDirWithPacks(action *pb.Action, command *pb.Command, usePacks bool) *rpcstatus.Status {
+func (w *worker) prepareDirWithPacks(ctx context.Context, action *pb.Action, command *pb.Command, usePacks bool) *rpcstatus.Status {
 	logr.WithFields(logrus.Fields{
 		"hash": w.actionDigest.Hash,
 	}).Info("Preparing directory")
 	defer func() {
 		w.metadata.InputFetchCompletedTimestamp = toTimestamp(time.Now())
 	}()
-	w.update(pb.ExecutionStage_EXECUTING, nil)
+	w.update(ctx, pb.ExecutionStage_EXECUTING, nil)
 	if err := w.createTempDir(); err != nil {
 		return status(err, codes.Internal, "Failed to create temp dir: %s", err)
 	}
 	start := time.Now()
 	w.metadata.InputFetchStartTimestamp = toTimestamp(start)
-	if err := w.downloadDirectory(action.InputRootDigest, usePacks); err != nil {
+	if err := w.downloadDirectory(ctx, action.InputRootDigest, usePacks); err != nil {
 		if grpcstatus.Code(err) == codes.NotFound {
 			blobNotFoundErrors.WithLabelValues(w.version).Inc()
 		}
@@ -765,7 +770,7 @@ func (w *worker) createTempDir() error {
 }
 
 // execute runs the actual commands once the inputs are prepared.
-func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.Command) *pb.ExecuteResponse {
+func (w *worker) execute(ctx context.Context, req *pb.ExecuteRequest, action *pb.Action, command *pb.Command) *pb.ExecuteResponse {
 	if w.clean {
 		defer func() {
 			if err := os.RemoveAll(w.dir); err != nil {
@@ -777,7 +782,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	start := time.Now()
 	w.metadata.ExecutionStartTimestamp = toTimestamp(start)
 	duration, _ := ptypes.Duration(action.Timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	cmdCtx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 
 	logr.WithFields(logrus.Fields{
@@ -796,7 +801,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		"argv0":         command.Arguments[0],
 	}).Debug("Sandbox selection")
 
-	cmd := exec.CommandContext(ctx, commandPath(command), command.Arguments[1:]...)
+	cmd := exec.CommandContext(cmdCtx, commandPath(command), command.Arguments[1:]...)
 	// Setting Pdeathsig should ideally make subprocesses get kill signals if we die.
 
 	if cmd.SysProcAttr = sysProcAttr(); cmd.SysProcAttr == nil {
@@ -820,7 +825,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		cmd.Env[i] = v.Name + "=" + v.Value
 	}
 
-	err := w.runCommand(ctx, cmd, duration)
+	err := w.runCommand(cmdCtx, cmd, duration)
 
 	execEnd := time.Now()
 	w.metadata.VirtualExecutionDuration = durationpb.New(duration)
@@ -841,7 +846,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		ExecutionMetadata: w.metadata,
 	}
 
-	stdoutDigest, uploadErr := w.client.WriteBlob(w.stdout.Bytes())
+	stdoutDigest, uploadErr := w.client.WriteBlob(ctx, w.stdout.Bytes())
 	if uploadErr != nil {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -853,7 +858,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	}
 	ar.StdoutDigest = stdoutDigest
 
-	stderrDigest, uploadErr := w.client.WriteBlob(w.stderr.Bytes())
+	stderrDigest, uploadErr := w.client.WriteBlob(ctx, w.stderr.Bytes())
 	if uploadErr != nil {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -873,9 +878,9 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	if err != nil {
 		log.Debug("Execution failed.\nStdout: %s\nStderr: %s", w.stdout.String(), w.stderr.String())
 		msg := "Execution failed for " + w.actionDigest.Hash + ": " + err.Error()
-		msg += w.writeUncachedResult(ar, msg)
+		msg += w.writeUncachedResult(ctx, ar, msg)
 		// Attempt to collect outputs. They may exist and contain useful information such as a test.results file
-		_ = w.collectOutputs(ar, command)
+		_ = w.collectOutputs(ctx, ar, command)
 		// Still counts as OK on a status code.
 		status := &rpcstatus.Status{Code: int32(codes.OK)}
 		if err == ErrTimeout {
@@ -889,7 +894,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 			Message: msg,
 		}
 	}
-	if err := w.collectOutputs(ar, command); err != nil {
+	if err := w.collectOutputs(ctx, ar, command); err != nil {
 		collectOutputErrors.Inc()
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -914,7 +919,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 			"hash": w.actionDigest.Hash,
 		}).Warn("Result missing some outputs")
 		msg := "result was missing some outputs"
-		w.writeUncachedResult(ar, msg)
+		w.writeUncachedResult(ctx, ar, msg)
 		return &pb.ExecuteResponse{
 			Status:  &rpcstatus.Status{Code: int32(codes.OK)}, // Still counts as OK on a status code.
 			Result:  ar,
@@ -922,7 +927,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		}
 	}
 
-	ar, err = w.client.UpdateActionResult(&pb.UpdateActionResultRequest{
+	ar, err = w.client.UpdateActionResult(ctx, &pb.UpdateActionResultRequest{
 		InstanceName: w.instanceName,
 		ActionDigest: w.actionDigest,
 		ActionResult: ar,
@@ -1071,7 +1076,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 // This is an extension for buildbarn-browser that lets it display results of a failed build.
 // It returns a string that, on success, contains an appropriate message about it (they are
 // communicated back in the human-readable part of the response).
-func (w *worker) writeUncachedResult(ar *pb.ActionResult, msg string) string {
+func (w *worker) writeUncachedResult(ctx context.Context, ar *pb.ActionResult, msg string) string {
 	// No point if we don't know where the browser is.
 	if w.browserURL == "" {
 		return ""
@@ -1083,7 +1088,7 @@ func (w *worker) writeUncachedResult(ar *pb.ActionResult, msg string) string {
 			Result: ar,
 		},
 	})
-	digest, err := w.client.WriteBlob(b)
+	digest, err := w.client.WriteBlob(ctx, b)
 	if err != nil {
 		log.Warning("Failed to save uncached action result: %s", err)
 		return ""
@@ -1225,7 +1230,7 @@ func (w *worker) markOutputsAsBinary(cmd *pb.Command) error {
 }
 
 // collectOutputs collects all the outputs of a command and adds them to the given ActionResult.
-func (w *worker) collectOutputs(ar *pb.ActionResult, cmd *pb.Command) error {
+func (w *worker) collectOutputs(ctx context.Context, ar *pb.ActionResult, cmd *pb.Command) error {
 	if containsEnvVar(cmd, "_BINARY", "true") {
 		if err := w.markOutputsAsBinary(cmd); err != nil {
 			return err
@@ -1242,7 +1247,7 @@ func (w *worker) collectOutputs(ar *pb.ActionResult, cmd *pb.Command) error {
 		entries = append(entries, e)
 		compressors = append(compressors, w.entryCompressor(e))
 	}
-	err = w.client.UploadIfMissing(entries, compressors)
+	err = w.client.UploadIfMissing(ctx, entries, compressors)
 
 	setRootDirectoryDigests(ar2.OutputDirectories, m)
 	ar.OutputFiles = ar2.OutputFiles
@@ -1293,10 +1298,10 @@ func allOutputSymlinks(ar *pb.ActionResult) []*pb.OutputSymlink {
 }
 
 // update sends an update on the response channel
-func (w *worker) update(stage pb.ExecutionStage_Value, response *pb.ExecuteResponse) error {
+func (w *worker) update(ctx context.Context, stage pb.ExecutionStage_Value, response *pb.ExecuteResponse) error {
 	w.Report(true, stage == pb.ExecutionStage_EXECUTING, true, "%s", stage)
 	body := common.MarshalOperation(stage, w.actionDigest, response, w.metadata)
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 	return common.PublishWithOrderingKey(ctx, w.responses, body, w.actionDigest.Hash, w.name)
 }
@@ -1319,8 +1324,8 @@ func (w *worker) periodicallyPushMetrics() {
 }
 
 // readBlobToProto reads an entire blob and deserialises it into a message.
-func (w *worker) readBlobToProto(digest *pb.Digest, msg proto.Message) error {
-	b, err := w.client.ReadBlob(digest)
+func (w *worker) readBlobToProto(ctx context.Context, digest *pb.Digest, msg proto.Message) error {
+	b, err := w.client.ReadBlob(ctx, digest)
 	if err != nil {
 		return err
 	}

@@ -18,7 +18,7 @@ func TestReplicatedSequentialSuccess(t *testing.T) {
 	trie := testTrie(t)
 	r := NewReplicator(trie, 2, false)
 	// This should succeed on the second call.
-	assert.NoError(t, r.Sequential("0000", func(s *Server) error {
+	assert.NoError(t, r.Sequential(t.Context(), "0000", func(s *Server) error {
 		called++
 		if s == trie.Get("0000") {
 			return status.Errorf(codes.Unavailable, "Server down")
@@ -32,7 +32,7 @@ func TestReplicatedSequentialFailure(t *testing.T) {
 	called := 0
 	r := NewReplicator(testTrie(t), 2, false)
 	// This should fail on all calls.
-	assert.Error(t, r.Sequential("0000", func(s *Server) error {
+	assert.Error(t, r.Sequential(t.Context(), "0000", func(s *Server) error {
 		called++
 		return status.Errorf(codes.Unavailable, "Server down")
 	}))
@@ -43,7 +43,7 @@ func TestReplicatedSequentialNotRetryable(t *testing.T) {
 	called := 0
 	r := NewReplicator(testTrie(t), 4, false)
 	// This should fail on the first call but not retry.
-	assert.Error(t, r.Sequential("0000", func(s *Server) error {
+	assert.Error(t, r.Sequential(t.Context(), "0000", func(s *Server) error {
 		called++
 		return status.Errorf(codes.InvalidArgument, "Your call is bad and you should feel bad")
 	}))
@@ -57,7 +57,7 @@ func TestReplicatedParallelSuccess(t *testing.T) {
 	trie := testTrie(t)
 	r := NewReplicator(trie, 2, false)
 	// This should succeed on the second server, and hence overall
-	assert.NoError(t, r.Parallel("0000", func(s *Server) error {
+	assert.NoError(t, r.Parallel(t.Context(), "0000", func(s *Server) error {
 		defer wg.Done()
 		atomic.AddInt64(&called, 1)
 		if s == trie.Get("0000") {
@@ -75,7 +75,7 @@ func TestReplicatedParallelFailure(t *testing.T) {
 	var called int64
 	r := NewReplicator(testTrie(t), 3, false)
 	// This should fail since all writes fail
-	assert.Error(t, r.Parallel("0000", func(s *Server) error {
+	assert.Error(t, r.Parallel(t.Context(), "0000", func(s *Server) error {
 		defer wg.Done()
 		atomic.AddInt64(&called, 1)
 		return status.Errorf(codes.Unavailable, "Server down")
@@ -90,7 +90,7 @@ func TestSingleServerDown(t *testing.T) {
 
 	// Fail it enough times to mark the first one down.
 	for i := 0; i < failureThreshold; i++ {
-		assert.NoError(t, r.Sequential("0000", func(s *Server) error {
+		assert.NoError(t, r.Sequential(t.Context(), "0000", func(s *Server) error {
 			if s == trie.Get("0000") {
 				return status.Errorf(codes.Unavailable, "Server down")
 			}
@@ -99,7 +99,7 @@ func TestSingleServerDown(t *testing.T) {
 	}
 
 	// Now we should still be able to succeed on the replica
-	assert.NoError(t, r.Sequential("0000", func(s *Server) error {
+	assert.NoError(t, r.Sequential(t.Context(), "0000", func(s *Server) error {
 		return nil
 	}))
 }
@@ -192,7 +192,7 @@ func TestRandomisedLoadBalancing(t *testing.T) {
 			r := NewReplicator(testTrie(t), 4, true)
 
 			var all []string
-			assert.NoError(t, r.SequentialAck("0000", func(s *Server) (bool, error) {
+			assert.NoError(t, r.SequentialAck(t.Context(), "0000", func(s *Server) (bool, error) {
 				all = append(all, s.Start)
 				return true, nil
 			}))
@@ -227,7 +227,7 @@ func TestRandomisedSequentialLoadBalancing(t *testing.T) {
 			r := NewReplicator(testTrie(t), 4, true)
 
 			var all []string
-			assert.NoError(t, r.Sequential("0000", func(s *Server) error {
+			assert.NoError(t, r.Sequential(t.Context(), "0000", func(s *Server) error {
 				all = append(all, s.Start)
 				return nil
 			}))

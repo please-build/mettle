@@ -60,13 +60,13 @@ type elanRedisWrapper struct {
 	maxSize   int64
 }
 
-func (r *elanRedisWrapper) Healthcheck() error {
-	return r.elan.Healthcheck()
+func (r *elanRedisWrapper) Healthcheck(ctx context.Context) error {
+	return r.elan.Healthcheck(ctx)
 }
 
-func (r *elanRedisWrapper) ReadBlob(dg *pb.Digest) ([]byte, error) {
+func (r *elanRedisWrapper) ReadBlob(ctx context.Context, dg *pb.Digest) ([]byte, error) {
 	if dg.SizeBytes < r.maxSize {
-		cmd := r.readRedis.Get(context.Background(), dg.Hash)
+		cmd := r.readRedis.Get(ctx, dg.Hash)
 		if err := cmd.Err(); err == nil {
 			blob, _ := cmd.Bytes()
 			return blob, nil
@@ -75,13 +75,15 @@ func (r *elanRedisWrapper) ReadBlob(dg *pb.Digest) ([]byte, error) {
 		}
 	}
 	// If we get here, the blob didn't exist. Download it then write back to Redis.
-	blob, err := r.elan.ReadBlob(dg)
+	blob, err := r.elan.ReadBlob(ctx, dg)
 	if err != nil {
 		return nil, err
 	}
 	if dg.SizeBytes < r.maxSize {
+		// Write the blob to redis in the background, with a detached context to ensure the write
+		// doesn't get terminated when ctx is cancelled upon request completion.
 		go func(hash string) {
-			if cmd := r.redis.Set(context.Background(), hash, blob, 0); cmd.Val() != "OK" {
+			if cmd := r.redis.Set(context.WithoutCancel(ctx), hash, blob, 0); cmd.Val() != "OK" {
 				log.Warning("Failed to set blob in Redis: %s", cmd.Err())
 			}
 		}(dg.Hash)
@@ -89,17 +91,17 @@ func (r *elanRedisWrapper) ReadBlob(dg *pb.Digest) ([]byte, error) {
 	return blob, nil
 }
 
-func (r *elanRedisWrapper) WriteBlob(blob []byte) (*pb.Digest, error) {
-	return r.elan.WriteBlob(blob)
+func (r *elanRedisWrapper) WriteBlob(ctx context.Context, blob []byte) (*pb.Digest, error) {
+	return r.elan.WriteBlob(ctx, blob)
 }
 
-func (r *elanRedisWrapper) UpdateActionResult(ar *pb.UpdateActionResultRequest) (*pb.ActionResult, error) {
+func (r *elanRedisWrapper) UpdateActionResult(ctx context.Context, ar *pb.UpdateActionResultRequest) (*pb.ActionResult, error) {
 	// We don't currently do anything with this, because we never try to read action results from
 	// Redis.
-	return r.elan.UpdateActionResult(ar)
+	return r.elan.UpdateActionResult(ctx, ar)
 }
 
-func (r *elanRedisWrapper) UploadIfMissing(entries []*uploadinfo.Entry, compressors []pb.Compressor_Value) error {
+func (r *elanRedisWrapper) UploadIfMissing(ctx context.Context, entries []*uploadinfo.Entry, compressors []pb.Compressor_Value) error {
 	// All we use Redis for is to filter down the missing set.
 	// This is approximate only and assumes that Redis always has a strict subset of the total keys.
 	missing := make([]*uploadinfo.Entry, 0, len(entries))
@@ -116,9 +118,9 @@ func (r *elanRedisWrapper) UploadIfMissing(entries []*uploadinfo.Entry, compress
 		}
 		entriesByHash[entry.Digest.Hash] = entry
 	}
-	blobs := r.readBlobs(keys, false)
+	blobs := r.readBlobs(ctx, keys, false)
 	if blobs == nil {
-		return r.elan.UploadIfMissing(entries, compressors)
+		return r.elan.UploadIfMissing(ctx, entries, compressors)
 	}
 	for i, blob := range blobs {
 		if blob == nil {
@@ -143,7 +145,7 @@ func (r *elanRedisWrapper) UploadIfMissing(entries []*uploadinfo.Entry, compress
 	if len(missing) == 0 {
 		return nil // Redis had everything
 	}
-	if err := r.elan.UploadIfMissing(missing, compressors); err != nil {
+	if err := r.elan.UploadIfMissing(ctx, missing, compressors); err != nil {
 		return err
 	}
 	if len(uploads) == 0 {
@@ -151,11 +153,11 @@ func (r *elanRedisWrapper) UploadIfMissing(entries []*uploadinfo.Entry, compress
 	}
 	// Only upload Redis after we have successfully uploaded blobs to Elan, otherwise we could
 	// create an inconsistent situation.
-	go r.writeBlobs(uploads)
+	go r.writeBlobs(ctx, uploads)
 	return nil // We never propagate Redis errors regardless.
 }
 
-func (r *elanRedisWrapper) BatchDownload(dgs []digest.Digest) (map[digest.Digest][]byte, error) {
+func (r *elanRedisWrapper) BatchDownload(ctx context.Context, dgs []digest.Digest) (map[digest.Digest][]byte, error) {
 	log.Debug("Checking Redis for batch of %d files...", len(dgs))
 	keys := make([]string, 0, len(dgs))
 	dgsByHash := make(map[string]digest.Digest, len(dgs))
@@ -168,9 +170,9 @@ func (r *elanRedisWrapper) BatchDownload(dgs []digest.Digest) (map[digest.Digest
 		}
 		dgsByHash[dg.Hash] = dg
 	}
-	blobs := r.readBlobs(keys, true)
+	blobs := r.readBlobs(ctx, keys, true)
 	if blobs == nil {
-		return r.elan.BatchDownload(dgs)
+		return r.elan.BatchDownload(ctx, dgs)
 	}
 	ret := make(map[digest.Digest][]byte, len(dgs))
 	for i, blob := range blobs {
@@ -184,7 +186,7 @@ func (r *elanRedisWrapper) BatchDownload(dgs []digest.Digest) (map[digest.Digest
 		return ret, nil
 	}
 	log.Debug("Found %d / %d files in Redis", len(dgs)-len(missingDigests), len(dgs))
-	m, err := r.elan.BatchDownload(missingDigests)
+	m, err := r.elan.BatchDownload(ctx, missingDigests)
 	if err != nil {
 		return nil, err
 	}
@@ -195,17 +197,17 @@ func (r *elanRedisWrapper) BatchDownload(dgs []digest.Digest) (map[digest.Digest
 			uploads = append(uploads, k.Hash, v)
 		}
 	}
-	go r.writeBlobs(uploads)
+	go r.writeBlobs(ctx, uploads)
 	return ret, nil
 }
 
 // readBlobs reads a set of blobs from Redis. It returns nil on any failure.
 // On success some blobs may not have been available in Redis, in which case they'll be nil.
-func (r *elanRedisWrapper) readBlobs(keys []string, metrics bool) [][]byte {
+func (r *elanRedisWrapper) readBlobs(ctx context.Context, keys []string, metrics bool) [][]byte {
 	if len(keys) == 0 {
 		return nil
 	}
-	resp, err := r.readRedis.MGet(context.Background(), keys...).Result()
+	resp, err := r.readRedis.MGet(ctx, keys...).Result()
 	if err != nil {
 		log.Warning("Failed to check blobs in Redis: %s", err)
 		return nil
@@ -238,21 +240,21 @@ func (r *elanRedisWrapper) readBlobs(keys []string, metrics bool) [][]byte {
 	return ret
 }
 
-// writeBlobs writes a series of blobs to Redis. They should be passed in interleaved key/value order.
-func (r *elanRedisWrapper) writeBlobs(uploads []interface{}) {
+// writeBlobs writes a series of blobs to Redis, detached from ctx's cancellation so it can outlive the request. They should be passed in interleaved key/value order.
+func (r *elanRedisWrapper) writeBlobs(ctx context.Context, uploads []interface{}) {
 	if len(uploads) == 0 {
 		return
 	}
 	log.Debug("Writing %d blobs to Redis...", len(uploads)/2)
-	if cmd := r.redis.MSet(context.Background(), uploads...); cmd.Val() != "OK" {
+	if cmd := r.redis.MSet(context.WithoutCancel(ctx), uploads...); cmd.Val() != "OK" {
 		log.Warning("Failed to upload %d blobs to Redis: %s", len(uploads), cmd.Err())
 	}
 	log.Debug("Wrote %d blobs to Redis...", len(uploads)/2)
 }
 
-func (r *elanRedisWrapper) ReadToFile(dg digest.Digest, filename string, compressed bool) error {
+func (r *elanRedisWrapper) ReadToFile(ctx context.Context, dg digest.Digest, filename string, compressed bool) error {
 	if dg.Size < r.maxSize {
-		blob, err := r.readRedis.Get(context.Background(), dg.Hash).Bytes()
+		blob, err := r.readRedis.Get(ctx, dg.Hash).Bytes()
 		if err != nil {
 			if err != redis.Nil { // Not found.
 				log.Warning("Error reading blob from Redis: %s", err)
@@ -264,12 +266,12 @@ func (r *elanRedisWrapper) ReadToFile(dg digest.Digest, filename string, compres
 			return os.WriteFile(filename, blob, 0644)
 		}
 	}
-	return r.elan.ReadToFile(dg, filename, compressed)
+	return r.elan.ReadToFile(ctx, dg, filename, compressed)
 }
 
-func (r *elanRedisWrapper) GetDirectoryTree(dg *pb.Digest, usePacks bool) ([]*pb.Directory, error) {
+func (r *elanRedisWrapper) GetDirectoryTree(ctx context.Context, dg *pb.Digest, usePacks bool) ([]*pb.Directory, error) {
 	// TODO(peterebden): Figure out how we are going to stitch Redis into this. There are a lot of       //                   little internal requests that we ideally want to be able to cache into Redis.
-	return r.elan.GetDirectoryTree(dg, usePacks)
+	return r.elan.GetDirectoryTree(ctx, dg, usePacks)
 }
 
 type redisClient interface {

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -154,6 +155,7 @@ updated blobs dominating much of the data downloaded.
 }
 
 func main() {
+	ctx := context.Background()
 	cmd, info := cli.ParseFlagsOrDie("Mettle", &opts, &opts.Logging)
 
 	initLogrusFromVerbosity(opts.Logging.Verbosity, opts.Logging.Structured)
@@ -175,15 +177,15 @@ func main() {
 		primaryRedis, readRedis := opts.Dual.Redis.Clients()
 
 		// Must ensure the topics are created ahead of time.
-		common.MustOpenTopic(requests)
-		common.MustOpenTopic(responses)
+		common.MustOpenTopic(ctx, requests)
+		common.MustOpenTopic(ctx, responses)
 		if opts.Dual.NumWorkers == 0 {
 			opts.Dual.NumWorkers = runtime.NumCPU()
 		}
 		for i := 0; i < opts.Dual.NumWorkers; i++ {
 			storage := opts.Dual.Storage.Storage[i%len(opts.Dual.Storage.Storage)]
 			dir := filepath.Join(opts.Dual.Dir, fmt.Sprintf("worker_%02d", i))
-			go worker.RunForever(worker.Opts{
+			go worker.RunForever(ctx, worker.Opts{
 				InstanceName:    opts.InstanceName,
 				RequestQueue:    requests + "?ackdeadline=10m",
 				ResponseQueue:   responses,
@@ -213,7 +215,7 @@ func main() {
 				ConnCheckPeriod: time.Duration(opts.Dual.ConnCheckPeriod),
 			})
 		}
-		api.ServeForever(api.Opts{
+		api.ServeForever(ctx, api.Opts{
 			GRPC:            opts.Dual.GRPC,
 			Queues:          queues,
 			AllowedPlatform: opts.Dual.AllowedPlatform,
@@ -222,7 +224,7 @@ func main() {
 		})
 	} else if cmd == "worker" {
 		primaryRedis, readRedis := opts.Worker.Redis.Clients()
-		worker.RunForever(worker.Opts{
+		worker.RunForever(ctx, worker.Opts{
 			InstanceName:      opts.InstanceName,
 			RequestQueue:      opts.Worker.Queues.RequestQueue,
 			ResponseQueue:     opts.Worker.Queues.ResponseQueue,
@@ -255,7 +257,7 @@ func main() {
 			ImmediateShutdown: opts.Worker.ImmediateShutdown,
 		})
 	} else if cmd == "api" {
-		api.ServeForever(api.Opts{
+		api.ServeForever(ctx, api.Opts{
 			GRPC:            opts.API.GRPC,
 			Name:            opts.API.Queues.ResponseQueueSuffix, // Unique per API server, so identifies it in pre-responses.
 			Queues:          opts.API.Queues,
@@ -265,12 +267,12 @@ func main() {
 			StorageURL:      opts.API.Storage.Storage,
 			StorageTLS:      opts.API.Storage.TLS,
 		})
-	} else if err := one(); err != nil {
+	} else if err := one(ctx); err != nil {
 		log.Fatalf("%s", err)
 	}
 }
 
-func one() error {
+func one(ctx context.Context) error {
 	if opts.One.ProfileFile != "" {
 		f, err := os.Create(opts.One.ProfileFile)
 		if err != nil {
@@ -292,7 +294,7 @@ func one() error {
 	}
 	primaryRedis, readRedis := opts.One.Redis.Clients()
 	for _, action := range opts.One.Args.Actions {
-		if err := worker.RunOne(worker.Opts{
+		if err := worker.RunOne(ctx, worker.Opts{
 			InstanceName:  opts.InstanceName,
 			Name:          "mettle-one",
 			Storage:       opts.One.Storage.Storage,

@@ -47,7 +47,7 @@ func newTestServer(t *testing.T) (*server, string, *atomic.Int64) {
 		w.Write(content)
 	}))
 	t.Cleanup(h.Close)
-	client, err := rexclient.New("mettle", fmt.Sprintf("127.0.0.1:%d", elanPort), false, "")
+	client, err := rexclient.New(t.Context(), "mettle", fmt.Sprintf("127.0.0.1:%d", elanPort), false, "")
 	require.NoError(t, err)
 	srv := &server{
 		client:        retryablehttp.NewClient(),
@@ -60,7 +60,7 @@ func newTestServer(t *testing.T) (*server, string, *atomic.Int64) {
 
 func TestFetchBlobVerifiesChecksum(t *testing.T) {
 	s, url, _ := newTestServer(t)
-	resp, err := s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	resp, err := s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout:    durationpb.New(time.Minute),
 		Uris:       []string{url},
 		Qualifiers: sriQualifier(sriFor(content)),
@@ -68,7 +68,7 @@ func TestFetchBlobVerifiesChecksum(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(len(content)), resp.BlobDigest.SizeBytes)
 
-	_, err = s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err = s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout:    durationpb.New(time.Minute),
 		Uris:       []string{url + "-other"},
 		Qualifiers: sriQualifier(sriFor([]byte("wibble"))),
@@ -78,7 +78,7 @@ func TestFetchBlobVerifiesChecksum(t *testing.T) {
 
 func TestFetchBlobDifferentChecksumForSameURL(t *testing.T) {
 	s, url, requests := newTestServer(t)
-	_, err := s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err := s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout:    durationpb.New(time.Minute),
 		Uris:       []string{url},
 		Qualifiers: sriQualifier(sriFor(content)),
@@ -86,7 +86,7 @@ func TestFetchBlobDifferentChecksumForSameURL(t *testing.T) {
 	require.NoError(t, err)
 	// A subsequent request for the same URL with a checksum it doesn't match must fail, not be satisfied
 	// by the earlier download.
-	_, err = s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err = s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout:    durationpb.New(time.Minute),
 		Uris:       []string{url},
 		Qualifiers: sriQualifier(sriFor([]byte("wibble"))),
@@ -97,13 +97,13 @@ func TestFetchBlobDifferentChecksumForSameURL(t *testing.T) {
 
 func TestFetchBlobUnverifiedThenVerified(t *testing.T) {
 	s, url, _ := newTestServer(t)
-	_, err := s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err := s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout: durationpb.New(time.Minute),
 		Uris:    []string{url},
 	})
 	require.NoError(t, err)
 	// An earlier download with no checksum must not satisfy one that has one.
-	_, err = s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err = s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout:    durationpb.New(time.Minute),
 		Uris:       []string{url},
 		Qualifiers: sriQualifier(sriFor([]byte("wibble"))),
@@ -113,11 +113,11 @@ func TestFetchBlobUnverifiedThenVerified(t *testing.T) {
 
 func TestFetchBlobNoTimeout(t *testing.T) {
 	s, url, _ := newTestServer(t)
-	_, err := s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err := s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Uris: []string{url},
 	})
 	assert.NoError(t, err, "a request with no timeout should not time out immediately")
-	_, err = s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err = s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout: durationpb.New(0),
 		Uris:    []string{url + "-zero"},
 	})
@@ -135,7 +135,7 @@ func TestFetchBlobTimeout(t *testing.T) {
 	}))
 	defer slow.Close()
 	start := time.Now()
-	_, err := s.FetchBlob(context.Background(), &pb.FetchBlobRequest{
+	_, err := s.FetchBlob(t.Context(), &pb.FetchBlobRequest{
 		Timeout: durationpb.New(200 * time.Millisecond),
 		Uris:    []string{slow.URL + "/" + t.Name()},
 	})
@@ -147,7 +147,7 @@ func TestFetchBlobSameQualifiersIsDeduplicated(t *testing.T) {
 	s, url, requests := newTestServer(t)
 	for i := 0; i < 3; i++ {
 		// Call this directly to bypass the action cache check in FetchBlob.
-		_, err := s.singleflightFetchURL(context.Background(), url, sriQualifier(sriFor(content)))
+		_, err := s.singleflightFetchURL(t.Context(), url, sriQualifier(sriFor(content)))
 		require.NoError(t, err)
 	}
 	assert.EqualValues(t, 1, requests.Load())
@@ -168,7 +168,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	defer os.RemoveAll(dir)
-	go elan.ServeForever(grpcutil.Opts{Host: "127.0.0.1", Port: elanPort}, "file://"+dir, 4, 0, 0, nil, 0)
+	go elan.ServeForever(context.Background(), grpcutil.Opts{Host: "127.0.0.1", Port: elanPort}, "file://"+dir, 4, 0, 0, nil, 0)
 	for i := 0; i < 100; i++ {
 		if conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", elanPort)); err == nil {
 			conn.Close()

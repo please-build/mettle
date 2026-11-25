@@ -32,8 +32,8 @@ type remoteClient struct {
 	health hpb.HealthClient
 }
 
-func (r *remoteClient) Healthcheck() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (r *remoteClient) Healthcheck(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if resp, err := r.health.Check(ctx, &hpb.HealthCheckRequest{}); err != nil {
 		return err
@@ -43,47 +43,47 @@ func (r *remoteClient) Healthcheck() error {
 	return nil
 }
 
-func (r *remoteClient) ReadBlob(dg *pb.Digest) ([]byte, error) {
+func (r *remoteClient) ReadBlob(ctx context.Context, dg *pb.Digest) ([]byte, error) {
 	defer observeTime(time.Now(), "ReadBlob")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*2)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*2)
 	defer cnx()
 	b, _, err := r.c.ReadBlob(ctx, digest.NewFromProtoUnvalidated(dg))
 	return b, err
 }
 
-func (r *remoteClient) WriteBlob(b []byte) (*pb.Digest, error) {
+func (r *remoteClient) WriteBlob(ctx context.Context, b []byte) (*pb.Digest, error) {
 	defer observeTime(time.Now(), "WriteBlob")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*2)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*2)
 	defer cnx()
 	dg, err := r.c.WriteBlob(ctx, b)
 	return dg.ToProto(), err
 }
 
-func (r *remoteClient) UpdateActionResult(req *pb.UpdateActionResultRequest) (*pb.ActionResult, error) {
+func (r *remoteClient) UpdateActionResult(ctx context.Context, req *pb.UpdateActionResultRequest) (*pb.ActionResult, error) {
 	defer observeTime(time.Now(), "UpdateActionResult")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*2)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*2)
 	defer cnx()
 	return r.c.UpdateActionResult(ctx, req)
 }
 
-func (r *remoteClient) UploadIfMissing(entries []*uploadinfo.Entry, compressors []pb.Compressor_Value) error {
+func (r *remoteClient) UploadIfMissing(ctx context.Context, entries []*uploadinfo.Entry, compressors []pb.Compressor_Value) error {
 	defer observeTime(time.Now(), "UploadIfMissing")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*10)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*10)
 	defer cnx()
 	_, _, err := r.c.UploadIfMissing(ctx, entries...)
 	return err
 }
 
-func (r *remoteClient) BatchDownload(digests []digest.Digest) (map[digest.Digest][]byte, error) {
+func (r *remoteClient) BatchDownload(ctx context.Context, digests []digest.Digest) (map[digest.Digest][]byte, error) {
 	defer observeTime(time.Now(), "BatchDownload")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*5)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*5)
 	defer cnx()
 	return r.c.BatchDownloadBlobs(ctx, digests)
 }
 
-func (r *remoteClient) ReadToFile(dg digest.Digest, filename string, compressed bool) error {
+func (r *remoteClient) ReadToFile(ctx context.Context, dg digest.Digest, filename string, compressed bool) error {
 	defer observeTime(time.Now(), "ReadToFile")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*2)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*2)
 	defer cnx()
 	if !compressed {
 		_, err := r.c.ReadBlobToFile(ctx, dg, filename)
@@ -93,9 +93,9 @@ func (r *remoteClient) ReadToFile(dg digest.Digest, filename string, compressed 
 	return err
 }
 
-func (r *remoteClient) GetDirectoryTree(dg *pb.Digest, stopAtPack bool) ([]*pb.Directory, error) {
+func (r *remoteClient) GetDirectoryTree(ctx context.Context, dg *pb.Digest, stopAtPack bool) ([]*pb.Directory, error) {
 	defer observeTime(time.Now(), "GetDirectoryTree")
-	ctx, cnx := context.WithTimeout(context.Background(), time.Minute*2)
+	ctx, cnx := context.WithTimeout(ctx, time.Minute*2)
 	defer cnx()
 	if stopAtPack {
 		return r.c.GetDirectoryTree(rexclient.StopAtPack(ctx), dg)

@@ -26,15 +26,15 @@ import (
 // at which this action result point and collect the various blob digests.
 // Missing input blobs are non-fatal, but missing output blobs will return an
 // error and will not mark any blob as referenced.
-func (c *collector) markReferencedBlobs(ar *ppb.ActionResult) error {
-	outputBlobs, err := c.outputBlobs(ar)
+func (c *collector) markReferencedBlobs(ctx context.Context, ar *ppb.ActionResult) error {
+	outputBlobs, err := c.outputBlobs(ctx, ar)
 	if err != nil {
 		return err
 	}
 
 	// Mark all the inputs as well. There are some fringe cases that make things awkward
 	// and it means things look more sensible in the browser.
-	inputBlobs := c.inputBlobs(ar)
+	inputBlobs := c.inputBlobs(ctx, ar)
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -64,7 +64,7 @@ func (c *collector) markReferencedBlobs(ar *ppb.ActionResult) error {
 
 // inputBlobs returns all the inputs for an action. It doesn't return any errors because we don't
 // want it to be fatal on failure; otherwise anything missing breaks the whole process.
-func (c *collector) inputBlobs(ar *ppb.ActionResult) []*pb.Digest {
+func (c *collector) inputBlobs(ctx context.Context, ar *ppb.ActionResult) []*pb.Digest {
 	dg := &pb.Digest{Hash: ar.Hash, SizeBytes: ar.SizeBytes}
 	action := &pb.Action{}
 	// Actions are stored separately from ARs. They are located in the CAS
@@ -77,7 +77,7 @@ func (c *collector) inputBlobs(ar *ppb.ActionResult) []*pb.Digest {
 		atomic.AddInt64(&c.missingInputs, 1)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 	if _, err := c.client.ReadProto(ctx, digest.Digest{
 		Hash: dg.Hash,
@@ -90,7 +90,7 @@ func (c *collector) inputBlobs(ar *ppb.ActionResult) []*pb.Digest {
 		return nil
 	}
 
-	digests, err := c.blobsForAction(action)
+	digests, err := c.blobsForAction(ctx, action)
 	if err != nil {
 		logr.WithFields(logrus.Fields{
 			"hash": dg.Hash,
@@ -106,7 +106,7 @@ func (c *collector) inputBlobs(ar *ppb.ActionResult) []*pb.Digest {
 // An action can point to the following blobs:
 // - a command
 // - an input root (which contains the directory tree for inputs)
-func (c *collector) blobsForAction(action *pb.Action) ([]*pb.Digest, error) {
+func (c *collector) blobsForAction(ctx context.Context, action *pb.Action) ([]*pb.Digest, error) {
 	digests := make([]*pb.Digest, 0, 2)
 	if action.InputRootDigest == nil {
 		return nil, errors.New("nil input root")
@@ -116,7 +116,7 @@ func (c *collector) blobsForAction(action *pb.Action) ([]*pb.Digest, error) {
 		digests = append(digests, action.CommandDigest)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 	dirs, err := c.client.GetDirectoryTree(ctx, action.InputRootDigest)
 	if err != nil {
@@ -130,9 +130,9 @@ func (c *collector) blobsForAction(action *pb.Action) ([]*pb.Digest, error) {
 
 // outputBlobs collects the list of output blobs from the given action result.
 // It also checks those are not missing and returns an error if some are.
-func (c *collector) outputBlobs(ar *ppb.ActionResult) ([]*pb.Digest, error) {
+func (c *collector) outputBlobs(ctx context.Context, ar *ppb.ActionResult) ([]*pb.Digest, error) {
 	dg := &pb.Digest{Hash: ar.Hash, SizeBytes: ar.SizeBytes}
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 	result, err := c.client.GetActionResult(ctx, &pb.GetActionResultRequest{
 		InstanceName: c.client.InstanceName,
@@ -145,13 +145,13 @@ func (c *collector) outputBlobs(ar *ppb.ActionResult) ([]*pb.Digest, error) {
 		return nil, fmt.Errorf("Found failed action result %s: exit code %d", ar.Hash, result.ExitCode)
 	}
 
-	outputBlobs, err := c.blobsForActionResult(result)
+	outputBlobs, err := c.blobsForActionResult(ctx, result)
 	if err != nil {
 		return nil, err
 	}
 
 	// Check whether all these outputs exist.
-	resp, err := c.client.FindMissingBlobs(context.Background(), &pb.FindMissingBlobsRequest{
+	resp, err := c.client.FindMissingBlobs(ctx, &pb.FindMissingBlobsRequest{
 		InstanceName: c.client.InstanceName,
 		BlobDigests:  outputBlobs,
 	})
@@ -176,10 +176,10 @@ func (c *collector) outputBlobs(ar *ppb.ActionResult) ([]*pb.Digest, error) {
 // - blobs with output directories and files
 // - a blob containing the standard output of the action
 // - a blob containing the standard error of the action
-func (c *collector) blobsForActionResult(ar *pb.ActionResult) ([]*pb.Digest, error) {
+func (c *collector) blobsForActionResult(ctx context.Context, ar *pb.ActionResult) ([]*pb.Digest, error) {
 	digests := make([]*pb.Digest, 0, len(ar.OutputDirectories))
 	for _, d := range ar.OutputDirectories {
-		dgs, err := c.blobsForOutputDir(d)
+		dgs, err := c.blobsForOutputDir(ctx, d)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
 				return nil, err
@@ -203,13 +203,13 @@ func (c *collector) blobsForActionResult(ar *pb.ActionResult) ([]*pb.Digest, err
 // directory depends (directly and indirectly).
 // An output directory only points to a tree, which in turns points to more
 // blobs (see blobsForTree).
-func (c *collector) blobsForOutputDir(d *pb.OutputDirectory) ([]*pb.Digest, error) {
+func (c *collector) blobsForOutputDir(ctx context.Context, d *pb.OutputDirectory) ([]*pb.Digest, error) {
 	tree := &pb.Tree{}
-	if _, err := c.client.ReadProto(context.Background(), digest.NewFromProtoUnvalidated(d.TreeDigest), tree); err != nil {
+	if _, err := c.client.ReadProto(ctx, digest.NewFromProtoUnvalidated(d.TreeDigest), tree); err != nil {
 		return nil, err
 	}
 
-	return append(c.blobsForTree(tree), d.TreeDigest), nil
+	return append(c.blobsForTree(ctx, tree), d.TreeDigest), nil
 }
 
 // blobsForTree returns the list of blob digests on which a tree depends
@@ -217,11 +217,11 @@ func (c *collector) blobsForOutputDir(d *pb.OutputDirectory) ([]*pb.Digest, erro
 // A tree points to the root directory blob, as well as child directory blobs.
 // For each of those we first check whether they exist. If not, we try to
 // repair (see checkDirectories).
-func (c *collector) blobsForTree(tree *pb.Tree) []*pb.Digest {
+func (c *collector) blobsForTree(ctx context.Context, tree *pb.Tree) []*pb.Digest {
 	// Here we attempt to fix up any outputs that don't also have the input facet.
 	// This is an incredibly sucky part of the API; the output doesn't contain some of the blobs
 	// that will get used on the input facet, so it's really nonobvious where they come from.
-	c.checkDirectories(append(tree.Children, tree.Root))
+	c.checkDirectories(ctx, append(tree.Children, tree.Root))
 
 	digests := c.blobsForDirectory(tree.Root)
 	for _, child := range tree.Children {
@@ -231,14 +231,14 @@ func (c *collector) blobsForTree(tree *pb.Tree) []*pb.Digest {
 }
 
 // checkDirectory checks that the directory protos from a Tree still exist in the CAS and uploads it if not.
-func (c *collector) checkDirectories(dirs []*pb.Directory) {
+func (c *collector) checkDirectories(ctx context.Context, dirs []*pb.Directory) {
 	entries := make([]*uploadinfo.Entry, len(dirs))
 	for i, d := range dirs {
 		e, _ := uploadinfo.EntryFromProto(d)
 		entries[i] = e
 	}
 	if !c.dryRun {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 		defer cancel()
 		if _, _, err := c.client.UploadIfMissing(ctx, entries...); err != nil {
 			log.Warning("Failed to upload missing directory protos: %s", err)

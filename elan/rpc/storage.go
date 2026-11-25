@@ -24,8 +24,8 @@ type bucket interface {
 	Delete(ctx context.Context, key string, hard bool) error
 }
 
-func mustOpenStorage(url string) bucket {
-	bucket, err := blob.OpenBucket(context.Background(), url)
+func mustOpenStorage(ctx context.Context, url string) bucket {
+	bucket, err := blob.OpenBucket(ctx, url)
 	if err != nil {
 		log.Fatalf("Failed to open storage bucket %s: %v", url, err)
 	}

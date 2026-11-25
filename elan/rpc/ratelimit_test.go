@@ -47,7 +47,7 @@ func setFastRechecks(t *testing.T) {
 func TestHandleRateLimitedWriteNoError(t *testing.T) {
 	b := &fakeBucket{}
 	s := &server{bucket: b}
-	assert.NoError(t, s.handleRateLimitedWrite(context.Background(), "cas/ab/abcd", nil))
+	assert.NoError(t, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", nil))
 	assert.Equal(t, 0, b.existsCalls)
 }
 
@@ -55,7 +55,7 @@ func TestHandleRateLimitedWriteOtherError(t *testing.T) {
 	b := &fakeBucket{existsAfter: 1}
 	s := &server{bucket: b}
 	err := errors.New("kaboom")
-	assert.Equal(t, err, s.handleRateLimitedWrite(context.Background(), "cas/ab/abcd", err))
+	assert.Equal(t, err, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", err))
 	assert.Equal(t, 0, b.existsCalls, "Should not check for existence on errors other than rate limiting")
 }
 
@@ -63,7 +63,7 @@ func TestHandleRateLimitedWriteBlobAppears(t *testing.T) {
 	setFastRechecks(t)
 	b := &fakeBucket{existsAfter: 2}
 	s := &server{bucket: b}
-	assert.NoError(t, s.handleRateLimitedWrite(context.Background(), "cas/ab/abcd", errRateLimited))
+	assert.NoError(t, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", errRateLimited))
 	assert.Equal(t, 2, b.existsCalls)
 }
 
@@ -71,7 +71,7 @@ func TestHandleRateLimitedWriteBlobNeverAppears(t *testing.T) {
 	setFastRechecks(t)
 	b := &fakeBucket{}
 	s := &server{bucket: b}
-	assert.Equal(t, errRateLimited, s.handleRateLimitedWrite(context.Background(), "cas/ab/abcd", errRateLimited))
+	assert.Equal(t, errRateLimited, s.handleRateLimitedWrite(t.Context(), "cas/ab/abcd", errRateLimited))
 	assert.Equal(t, len(rateLimitedWriteRechecks), b.existsCalls)
 }
 
@@ -79,7 +79,7 @@ func TestHandleRateLimitedWriteContextCancelled(t *testing.T) {
 	setFastRechecks(t)
 	b := &fakeBucket{existsAfter: 1}
 	s := &server{bucket: b}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	assert.Equal(t, errRateLimited, s.handleRateLimitedWrite(ctx, "cas/ab/abcd", errRateLimited))
 	assert.Equal(t, 0, b.existsCalls)
@@ -92,20 +92,20 @@ func TestWriteAllRateLimited(t *testing.T) {
 	dg := &pb.Digest{Hash: hex.EncodeToString(h[:]), SizeBytes: int64(len(data))}
 
 	s := &server{bucket: &fakeBucket{writeErr: errRateLimited, existsAfter: 1}, largeBlobSize: DefaultMaxSize}
-	assert.NoError(t, s.writeAll(context.Background(), dg, data, false))
+	assert.NoError(t, s.writeAll(t.Context(), dg, data, false))
 
 	s = &server{bucket: &fakeBucket{writeErr: errRateLimited}, largeBlobSize: DefaultMaxSize}
-	assert.Equal(t, codes.ResourceExhausted, status.Code(s.writeAll(context.Background(), dg, data, false)))
+	assert.Equal(t, codes.ResourceExhausted, status.Code(s.writeAll(t.Context(), dg, data, false)))
 }
 
 func TestElanClientWriteBlobRateLimited(t *testing.T) {
 	setFastRechecks(t)
 	// The initial existence check in WriteBlob is the first call, so make it appear on the second.
 	e := &elanClient{s: &server{bucket: &fakeBucket{writeErr: errRateLimited, existsAfter: 2}}, timeout: time.Minute}
-	_, err := e.WriteBlob([]byte("hello world"))
+	_, err := e.WriteBlob(t.Context(), []byte("hello world"))
 	assert.NoError(t, err)
 
 	e = &elanClient{s: &server{bucket: &fakeBucket{writeErr: errRateLimited}}, timeout: time.Minute}
-	_, err = e.WriteBlob([]byte("hello world"))
+	_, err = e.WriteBlob(t.Context(), []byte("hello world"))
 	assert.Error(t, err)
 }

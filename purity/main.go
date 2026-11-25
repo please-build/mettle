@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"runtime/pprof"
 	"time"
@@ -66,12 +67,12 @@ func main() {
 	if cmd == "periodic" {
 		go cli.ServeAdmin("purity", opts.Admin, info)
 	}
-	if err := run(cmd); err != nil {
+	if err := run(context.Background(), cmd); err != nil {
 		log.Fatalf("Failed: %s", err)
 	}
 }
 
-func run(cmd string) error {
+func run(ctx context.Context, cmd string) error {
 	if opts.ProfileFile != "" {
 		f, err := os.Create(opts.ProfileFile)
 		if err != nil {
@@ -84,15 +85,15 @@ func run(cmd string) error {
 		defer pprof.StopCPUProfile()
 	}
 	if cmd == "one" {
-		return gc.Run(opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, time.Duration(opts.One.MinAge), opts.One.ReplicationFactor, opts.One.DryRun)
+		return gc.Run(ctx, opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, time.Duration(opts.One.MinAge), opts.One.ReplicationFactor, opts.One.DryRun)
 	} else if cmd == "periodic" {
-		gc.RunForever(opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, time.Duration(opts.Periodic.MinAge), time.Duration(opts.Periodic.Frequency), opts.One.ReplicationFactor)
+		gc.RunForever(ctx, opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, time.Duration(opts.Periodic.MinAge), time.Duration(opts.Periodic.Frequency), opts.One.ReplicationFactor)
 	} else if cmd == "delete" {
-		return gc.Delete(opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, cli.AllToProto(opts.Delete.Args.Actions))
+		return gc.Delete(ctx, opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, cli.AllToProto(opts.Delete.Args.Actions))
 	} else if cmd == "clean" {
-		return gc.Clean(opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, opts.Clean.DryRun)
+		return gc.Clean(ctx, opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, opts.Clean.DryRun)
 	} else if cmd == "replicate" {
-		return gc.Replicate(opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, opts.Replicate.ReplicationFactor, opts.Replicate.DryRun)
+		return gc.Replicate(ctx, opts.GC.URL, opts.GC.InstanceName, opts.GC.TokenFile, opts.GC.TLS, opts.Replicate.ReplicationFactor, opts.Replicate.DryRun)
 	}
 	return nil
 }

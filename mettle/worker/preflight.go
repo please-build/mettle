@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 // runPreflightAction runs a simple known action to ensure we can process them correctly.
-func (w *worker) runPreflightAction() error {
+func (w *worker) runPreflightAction(ctx context.Context) error {
 	log.Notice("Preparing pre-flight action...")
 	const fileContents = "thirty-five ham and cheese sandwiches\n"
 	cmd := &pb.Command{
@@ -45,7 +46,7 @@ func (w *worker) runPreflightAction() error {
 		SkipCacheLookup: true,
 		ActionDigest:    mustNewDigestFromMessage(action),
 	}
-	if err := w.client.UploadIfMissing([]*uploadinfo.Entry{
+	if err := w.client.UploadIfMissing(ctx, []*uploadinfo.Entry{
 		uploadinfo.EntryFromBlob([]byte(fileContents)),
 		mustEntryFromProto(cmd),
 		mustEntryFromProto(input),
@@ -59,7 +60,7 @@ func (w *worker) runPreflightAction() error {
 		return err
 	}
 	log.Notice("Running pre-flight action...")
-	if resp := w.runTaskRequest(req); resp.Status.Code != 0 {
+	if resp := w.runTaskRequest(ctx, req); resp.Status.Code != 0 {
 		return fmt.Errorf("Failed to run pre-flight request: %s %s", resp.Status, resp.Message)
 	} else if resp.Result.ExitCode != 0 {
 		return fmt.Errorf("Failed to run pre-flight request: exit code %d: %s", resp.Result.ExitCode, resp.Message)
