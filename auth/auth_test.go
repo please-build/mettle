@@ -33,18 +33,19 @@ roles:
     principals:
       - builder@project.iam.gserviceaccount.com
       - ci@project.iam.gserviceaccount.com
+  legacy:
+    permissions:
+      - cas:write
+      - ac:write
 google:
   audience: https://mettle.example.com
 static:
-  file: `+tokenFile+`
-  permissions:
-    - cas:write
-    - ac:write
-`)
+  file: `+tokenFile,
+)
 	cfg, err := LoadConfig(cfgFile)
 	require.NoError(t, err)
 
-	require.Len(t, cfg.Roles, 2)
+	require.Len(t, cfg.Roles, 3)
 	assert.Equal(t, []string{CASRead, ACRead}, cfg.Roles["anonymous"].Permissions)
 	assert.Empty(t, cfg.Roles["anonymous"].Principals)
 	assert.Equal(t, []string{CASRead, CASWrite, ExecuteWrite}, cfg.Roles["builder"].Permissions)
@@ -56,8 +57,7 @@ static:
 	assert.Equal(t, "https://mettle.example.com", cfg.Google.Audience)
 
 	assert.Equal(t, tokenFile, cfg.Static.File)
-	assert.Equal(t, "s3cr3t", cfg.Static.Token)
-	assert.Equal(t, []string{CASWrite, ACWrite}, cfg.Static.Permissions)
+	assert.Equal(t, []string{CASWrite, ACWrite}, cfg.Roles["legacy"].Permissions)
 }
 
 func TestLoadConfigNoStaticFile(t *testing.T) {
@@ -69,7 +69,6 @@ google:
 	require.NoError(t, err)
 	assert.Equal(t, "aud", cfg.Google.Audience)
 	assert.Empty(t, cfg.Static.File)
-	assert.Empty(t, cfg.Static.Token)
 	assert.Empty(t, cfg.Roles)
 }
 
@@ -79,16 +78,6 @@ func TestLoadConfigEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, cfg)
 	assert.Empty(t, cfg.Roles)
-}
-
-func TestLoadConfigTokenIsNotReadFromYAML(t *testing.T) {
-	cfgFile := writeFile(t, t.TempDir(), "config.yaml", `
-static:
-  token: should-be-ignored
-`)
-	cfg, err := LoadConfig(cfgFile)
-	require.NoError(t, err)
-	assert.Empty(t, cfg.Static.Token)
 }
 
 func TestLoadConfigMissingFile(t *testing.T) {
@@ -110,17 +99,6 @@ roles:
 `)
 	_, err := LoadConfig(cfgFile)
 	assert.ErrorContains(t, err, "failed to parse config")
-}
-
-func TestLoadConfigMissingStaticTokenFile(t *testing.T) {
-	dir := t.TempDir()
-	cfgFile := writeFile(t, dir, "config.yaml", `
-static:
-  file: `+filepath.Join(dir, "nonexistent")+`
-`)
-	_, err := LoadConfig(cfgFile)
-	assert.ErrorContains(t, err, "failed to read static token file")
-	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestMustLoadConfig(t *testing.T) {
