@@ -410,7 +410,7 @@ const file_proto_lucidity_lucidity_proto_rawDesc = "" +
 	"\adisable\x18\x02 \x01(\bR\adisable2\xdc\x01\n" +
 	"\bLucidity\x12\\\n" +
 	"\x06Update\x12$.build.please.remote.lucidity.Worker\x1a,.build.please.remote.lucidity.UpdateResponse\x12r\n" +
-	"\vListWorkers\x120.build.please.remote.lucidity.ListWorkersRequest\x1a1.build.please.remote.lucidity.ListWorkersResponseB:Z8github.com/please-build/mettle/proto/lucidityb\x06proto3"
+	"\vListWorkers\x120.build.please.remote.lucidity.ListWorkersRequest\x1a1.build.please.remote.lucidity.ListWorkersResponseB/Z-github.com/please-build/mettle/proto/lucidityb\x06proto3"
 
 var (
 	file_proto_lucidity_lucidity_proto_rawDescOnce sync.Once
