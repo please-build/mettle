@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -15,15 +16,15 @@ import (
 // If a scheme is given (gs:// etc) it assumes it is a bucket URL and uses that (with some
 // default settings etc). The tls and tokenFile arguments are ignored in this case.
 // If no scheme is given it assumes a gRPC URL and creates a remote client communicating using the API.
-func New(url string, tls bool, tokenFile string) (Client, error) {
+func New(ctx context.Context, url string, tls bool, tokenFile string) (Client, error) {
 	// We can't use url.Parse here because it tends to put too much into the scheme (e.g. example.org:8080 -> scheme:example.org)
 	if strings.Contains(url, "://") {
 		return &elanClient{
-			s:       createServer(url, 8, 10240, 10*1024*1024, nil, 0),
+			s:       createServer(ctx, url, 8, 10240, 10*1024*1024, nil, 0),
 			timeout: 3 * time.Minute,
 		}, nil
 	}
-	client, err := rexclient.New("mettle", url, tls, tokenFile)
+	client, err := rexclient.New(ctx, "mettle", url, tls, tokenFile)
 	if err != nil {
 		return nil, err
 	}
@@ -35,12 +36,12 @@ func New(url string, tls bool, tokenFile string) (Client, error) {
 
 // Client is a genericised interface over a limited set of actions on the CAS / AC.
 type Client interface {
-	Healthcheck() error
-	ReadBlob(*pb.Digest) ([]byte, error)
-	WriteBlob([]byte) (*pb.Digest, error)
-	UpdateActionResult(*pb.UpdateActionResultRequest) (*pb.ActionResult, error)
-	UploadIfMissing([]*uploadinfo.Entry, []pb.Compressor_Value) error
-	BatchDownload([]digest.Digest) (map[digest.Digest][]byte, error)
-	ReadToFile(digest.Digest, string, bool) error
-	GetDirectoryTree(*pb.Digest, bool) ([]*pb.Directory, error)
+	Healthcheck(context.Context) error
+	ReadBlob(context.Context, *pb.Digest) ([]byte, error)
+	WriteBlob(context.Context, []byte) (*pb.Digest, error)
+	UpdateActionResult(context.Context, *pb.UpdateActionResultRequest) (*pb.ActionResult, error)
+	UploadIfMissing(context.Context, []*uploadinfo.Entry, []pb.Compressor_Value) error
+	BatchDownload(context.Context, []digest.Digest) (map[digest.Digest][]byte, error)
+	ReadToFile(context.Context, digest.Digest, string, bool) error
+	GetDirectoryTree(context.Context, *pb.Digest, bool) ([]*pb.Directory, error)
 }

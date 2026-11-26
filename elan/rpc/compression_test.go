@@ -29,7 +29,7 @@ const (
 var expectedData, compressedData []byte
 
 func TestStreamRead(t *testing.T) {
-	client, err := bsClient.Read(context.Background(), &bs.ReadRequest{
+	client, err := bsClient.Read(t.Context(), &bs.ReadRequest{
 		ResourceName: name,
 	})
 	require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestStreamRead(t *testing.T) {
 }
 
 func TestStreamReadResume(t *testing.T) {
-	client, err := bsClient.Read(context.Background(), &bs.ReadRequest{
+	client, err := bsClient.Read(t.Context(), &bs.ReadRequest{
 		ResourceName: name,
 	})
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestStreamReadResume(t *testing.T) {
 		buf = append(buf, msg.Data...)
 	}
 	// Pretend the connection gets broken here.
-	client, err = bsClient.Read(context.Background(), &bs.ReadRequest{
+	client, err = bsClient.Read(t.Context(), &bs.ReadRequest{
 		ResourceName: name,
 		ReadOffset:   int64(len(buf)),
 	})
@@ -74,7 +74,7 @@ func TestStreamReadResume(t *testing.T) {
 }
 
 func TestStreamReadResumeWithLimit(t *testing.T) {
-	client, err := bsClient.Read(context.Background(), &bs.ReadRequest{
+	client, err := bsClient.Read(t.Context(), &bs.ReadRequest{
 		ResourceName: name,
 	})
 	require.NoError(t, err)
@@ -85,7 +85,7 @@ func TestStreamReadResumeWithLimit(t *testing.T) {
 		buf = append(buf, msg.Data...)
 	}
 	// Pretend the connection gets broken here.
-	client, err = bsClient.Read(context.Background(), &bs.ReadRequest{
+	client, err = bsClient.Read(t.Context(), &bs.ReadRequest{
 		ResourceName: name,
 		ReadOffset:   int64(len(buf)),
 		ReadLimit:    int64(size - len(buf)),
@@ -103,7 +103,7 @@ func TestStreamReadResumeWithLimit(t *testing.T) {
 }
 
 func TestCompressedRead(t *testing.T) {
-	client, err := bsClient.Read(context.Background(), &bs.ReadRequest{
+	client, err := bsClient.Read(t.Context(), &bs.ReadRequest{
 		ResourceName: cname,
 	})
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestCompressedRead(t *testing.T) {
 }
 
 func TestCompressedReadResume(t *testing.T) {
-	r := newReconnectingReader(bsClient, cname)
+	r := newReconnectingReader(t.Context(), bsClient, cname)
 	var buf, ubuf bytes.Buffer
 	zr, err := zstd.NewReader(io.TeeReader(r, &buf))
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestCompressedReadResume(t *testing.T) {
 
 func testMain(m *testing.M) int {
 	storage := "file://" + os.Getenv("TEST_DIR") + "/elan/rpc"
-	lis, s := startServer(grpcutil.Opts{
+	lis, s := startServer(context.Background(), grpcutil.Opts{
 		Host: "127.0.0.1",
 		Port: 0,
 	}, storage, 5, 1000, 1000, nil, 0)
@@ -170,21 +170,23 @@ func TestMain(m *testing.M) {
 // A reconnectingReader implements an io.Reader over the bytestream.Read RPC
 // by reconnecting every time to simulate connection failures.
 type reconnectingReader struct {
+	ctx    context.Context
 	client bs.ByteStreamClient
 	name   string
 	offset int64
 	Total  int64
 }
 
-func newReconnectingReader(client bs.ByteStreamClient, resourceName string) *reconnectingReader {
+func newReconnectingReader(ctx context.Context, client bs.ByteStreamClient, resourceName string) *reconnectingReader {
 	return &reconnectingReader{
+		ctx:    ctx,
 		client: client,
 		name:   resourceName,
 	}
 }
 
 func (r *reconnectingReader) Read(buf []byte) (int, error) {
-	stream, err := r.client.Read(context.Background(), &bs.ReadRequest{
+	stream, err := r.client.Read(r.ctx, &bs.ReadRequest{
 		ResourceName: r.name,
 		ReadOffset:   r.offset,
 	})

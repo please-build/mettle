@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"time"
 
 	"github.com/peterebden/go-cli-init/v4/flags"
@@ -51,7 +52,7 @@ func main() {
 	cr := newReplicator(opts.Geometry, opts.Replicas, opts.LoadBalance)
 	ar := newReplicator(opts.AssetGeometry, opts.Replicas, opts.LoadBalance)
 	er := newReplicator(opts.ExecutorGeometry, opts.Replicas, opts.LoadBalance)
-	rpc.ServeForever(opts.GRPC, cr, ar, er, time.Duration(opts.Timeout))
+	rpc.ServeForever(context.Background(), opts.GRPC, cr, ar, er, time.Duration(opts.Timeout))
 }
 
 func newReplicator(geometry map[string]string, replicas int, loadBalance bool) *trie.Replicator {

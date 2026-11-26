@@ -60,8 +60,8 @@ type ReplicatedAckFunc func(*Server) (bool, error)
 // Sequential runs the function sequentially from the primary, attempting each replica in sequence until either one is
 // successful or they all fail.
 // It returns an error if all replicas fail, which is the error of the primary replica (with appropriate status code etc).
-func (r *Replicator) Sequential(key string, f ReplicatedFunc) error {
-	return r.SequentialAck(key, func(s *Server) (bool, error) {
+func (r *Replicator) Sequential(ctx context.Context, key string, f ReplicatedFunc) error {
+	return r.SequentialAck(ctx, key, func(s *Server) (bool, error) {
 		return false, f(s)
 	})
 }
@@ -70,12 +70,12 @@ func (r *Replicator) Sequential(key string, f ReplicatedFunc) error {
 // continue to the next replica even on a non-error response.
 // This facilitates the BatchReadBlobs endpoint that basically never returns an 'actual' error
 // because they're all inline.
-func (r *Replicator) SequentialAck(key string, f ReplicatedAckFunc) error {
+func (r *Replicator) SequentialAck(ctx context.Context, key string, f ReplicatedAckFunc) error {
 	var merr *multierror.Error
 	success := false
 	offset := r.startingOffset()
 	for i := 0; i < r.Replicas; i++ {
-		shouldContinue, err := r.callAck(f, r.Trie.GetOffset(key, offset))
+		shouldContinue, err := r.callAck(ctx, f, r.Trie.GetOffset(key, offset))
 		if err == nil {
 			if !shouldContinue {
 				return nil // No need to do any more.
@@ -110,24 +110,24 @@ func (r *Replicator) SequentialAck(key string, f ReplicatedAckFunc) error {
 }
 
 // SequentialDigest is like Sequential but takes a digest instead of the raw hash.
-func (r *Replicator) SequentialDigest(digest *pb.Digest, f ReplicatedFunc) error {
+func (r *Replicator) SequentialDigest(ctx context.Context, digest *pb.Digest, f ReplicatedFunc) error {
 	if digest == nil {
 		return fmt.Errorf("Missing digest")
 	} else if len(digest.Hash) != 64 {
 		return fmt.Errorf("Invalid digest: [%s]", digest.Hash)
 	}
-	return r.Sequential(digest.Hash, f)
+	return r.Sequential(ctx, digest.Hash, f)
 }
 
 // Parallel replicates the given function to all replicas at once.
 // It returns an error if all replicas fail, hence it is possible for some replicas not to receive data.
-func (r *Replicator) Parallel(key string, f ReplicatedFunc) error {
+func (r *Replicator) Parallel(ctx context.Context, key string, f ReplicatedFunc) error {
 	var g multierror.Group
 	offset := r.startingOffset()
 	for i := 0; i < r.Replicas; i++ {
 		o := offset
 		g.Go(func() error {
-			return r.call(f, r.Trie.GetOffset(key, o))
+			return r.call(ctx, f, r.Trie.GetOffset(key, o))
 		})
 		offset += r.increment
 	}
@@ -149,13 +149,13 @@ func (r *Replicator) startingOffset() int {
 }
 
 // ParallelDigest is like Parallel but takes a digest instead of the raw hash.
-func (r *Replicator) ParallelDigest(digest *pb.Digest, f ReplicatedFunc) error {
+func (r *Replicator) ParallelDigest(ctx context.Context, digest *pb.Digest, f ReplicatedFunc) error {
 	if digest == nil {
 		return fmt.Errorf("Missing digest")
 	} else if len(digest.Hash) != 64 {
 		return fmt.Errorf("Invalid digest: [%s]", digest.Hash)
 	}
-	return r.Parallel(digest.Hash, f)
+	return r.Parallel(ctx, digest.Hash, f)
 }
 
 // All sends a request to all replicas for a particular key simultaneously;
@@ -174,7 +174,7 @@ func (r *Replicator) All(key string, f ReplicatedFunc) error {
 }
 
 // callAck calls a replicated function on a single replica, handling liveness on the server.
-func (r *Replicator) callAck(f ReplicatedAckFunc, s *Server) (bool, error) {
+func (r *Replicator) callAck(ctx context.Context, f ReplicatedAckFunc, s *Server) (bool, error) {
 	if s.Failed >= failureThreshold {
 		log.Debug("Skipping replica %s-%s, it is marked down", s.Start, s.End)
 		return true, serverDead
@@ -183,7 +183,9 @@ func (r *Replicator) callAck(f ReplicatedAckFunc, s *Server) (bool, error) {
 	if r.isServer(err) {
 		if failed := atomic.AddInt64(&s.Failed, 1); failed == failureThreshold {
 			log.Error("Error on server %s-%s, taking it out of service: %s", s.Start, s.End, err)
-			go r.recheck(s)
+			// context.WithCancel allows the background recheck to continue after a request-scoped
+			// context is cancelled.
+			go r.recheck(context.WithoutCancel(ctx), s)
 		} else {
 			log.Warning("Error on server %s-%s, failures: %d: %s", s.Start, s.End, failed, err)
 		}
@@ -194,8 +196,8 @@ func (r *Replicator) callAck(f ReplicatedAckFunc, s *Server) (bool, error) {
 }
 
 // call is like callAck but doesn't offer the option of acknowledgement.
-func (r *Replicator) call(f ReplicatedFunc, s *Server) error {
-	_, err := r.callAck(func(s *Server) (bool, error) {
+func (r *Replicator) call(ctx context.Context, f ReplicatedFunc, s *Server) error {
+	_, err := r.callAck(ctx, func(s *Server) (bool, error) {
 		return false, f(s)
 	}, s)
 	return err
@@ -223,18 +225,18 @@ func (r *Replicator) healthcheckRange(key string) error {
 }
 
 // recheck continually rechecks a server to see if it's become alive again.
-func (r *Replicator) recheck(s *Server) {
+func (r *Replicator) recheck(ctx context.Context, s *Server) {
 	t := time.NewTicker(recheckFrequency)
 	defer t.Stop()
 	for range t.C {
-		if r.recheckOnce(s) {
+		if r.recheckOnce(ctx, s) {
 			break
 		}
 	}
 }
 
-func (r *Replicator) recheckOnce(s *Server) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (r *Replicator) recheckOnce(ctx context.Context, s *Server) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := s.Health.Check(ctx, &grpc_health_v1.HealthCheckRequest{}); err != nil {
 		log.Warning("Server %s-%s is still unhealthy: %s", s.Start, s.End, err)

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"strings"
@@ -71,5 +72,5 @@ func main() {
 		log.Notice("Loaded auth credentials for %s", prefix)
 	}
 
-	rpc.ServeForever(opts.GRPC, opts.Storage.Storage, opts.Storage.TLS, opts.Parallelism, opts.Headers, auth, opts.ForceCasCheck)
+	rpc.ServeForever(context.Background(), opts.GRPC, opts.Storage.Storage, opts.Storage.TLS, opts.Parallelism, opts.Headers, auth, opts.ForceCasCheck)
 }

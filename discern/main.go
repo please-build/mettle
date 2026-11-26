@@ -64,47 +64,48 @@ also isn't a server so #dealwithit
 }
 
 func main() {
+	ctx := context.Background()
 	cmd, _ := cli.ParseFlagsOrDie("Discern", &opts, &opts.Logging)
 	if cmd == "topn" {
-		if err := topn(); err != nil {
+		if err := topn(ctx); err != nil {
 			log.Fatalf("Failed to find action results: %s", err)
 		}
 		return
 	} else if cmd == "mostused" {
-		if err := mostused(); err != nil {
+		if err := mostused(ctx); err != nil {
 			log.Fatalf("Failed to find blob info: %s", err)
 		}
 		return
 	}
-	client := rexclient.MustNew(opts.Storage.InstanceName, opts.Storage.Storage, opts.Storage.TLS, "")
+	client := rexclient.MustNew(ctx, opts.Storage.InstanceName, opts.Storage.Storage, opts.Storage.TLS, "")
 	defer client.Close()
 	if cmd == "diff" {
-		diff(client)
+		diff(ctx, client)
 	} else {
-		show(client)
+		show(ctx, client)
 	}
 }
 
-func diff(client *client.Client) {
+func diff(ctx context.Context, client *client.Client) {
 	before := &pb.Action{}
 	after := &pb.Action{}
-	mustGetProto(client, opts.Diff.Before.ToProto(), before)
-	mustGetProto(client, opts.Diff.After.ToProto(), after)
+	mustGetProto(ctx, client, opts.Diff.Before.ToProto(), before)
+	mustGetProto(ctx, client, opts.Diff.After.ToProto(), after)
 	if before.CommandDigest.Hash == after.CommandDigest.Hash {
 		log.Notice("Commands are identical")
 	} else {
 		log.Warning("Commands differ: %s vs. %s", before.CommandDigest.Hash, after.CommandDigest.Hash)
 		beforeCmd := &pb.Command{}
 		afterCmd := &pb.Command{}
-		mustGetProto(client, before.CommandDigest, beforeCmd)
-		mustGetProto(client, after.CommandDigest, afterCmd)
+		mustGetProto(ctx, client, before.CommandDigest, beforeCmd)
+		mustGetProto(ctx, client, after.CommandDigest, afterCmd)
 		compareCommands(beforeCmd, afterCmd)
 	}
 	if before.InputRootDigest.Hash == after.InputRootDigest.Hash {
 		log.Notice("Input roots are identical")
 	} else {
 		log.Warning("Input roots differ: %s vs. %s", before.InputRootDigest, after.InputRootDigest)
-		compareDirectories(client, before.InputRootDigest, after.InputRootDigest, "")
+		compareDirectories(ctx, client, before.InputRootDigest, after.InputRootDigest, "")
 	}
 	if !proto.Equal(before.Timeout, after.Timeout) {
 		log.Warning("Timeouts are different: %s / %s", before.Timeout, after.Timeout)
@@ -114,8 +115,8 @@ func diff(client *client.Client) {
 	}
 }
 
-func mustGetProto(client *client.Client, dg *pb.Digest, msg proto.Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+func mustGetProto(ctx context.Context, client *client.Client, dg *pb.Digest, msg proto.Message) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if _, err := client.ReadProto(ctx, digest.NewFromProtoUnvalidated(dg), msg); err != nil {
 		log.Fatalf("Failed to fetch digest %s: %s", dg.Hash, err)
@@ -167,11 +168,11 @@ func compareRepeatedString(name string, b, a []string) bool {
 	return ret
 }
 
-func compareDirectories(client *client.Client, before, after *pb.Digest, indent string) {
+func compareDirectories(ctx context.Context, client *client.Client, before, after *pb.Digest, indent string) {
 	b := &pb.Directory{}
 	a := &pb.Directory{}
-	mustGetProto(client, before, b)
-	mustGetProto(client, after, a)
+	mustGetProto(ctx, client, before, b)
+	mustGetProto(ctx, client, after, a)
 	for i, f1 := range b.Files {
 		if i >= len(a.Files) {
 			log.Warning("%s%s %s%s / <missing>", indent, f1.Name, f1.Digest.Hash, exe(f1.IsExecutable))
@@ -184,7 +185,7 @@ func compareDirectories(client *client.Client, before, after *pb.Digest, indent 
 			log.Warning("%s%s %s / <missing>", indent, d1.Name, d1.Digest.Hash)
 		} else if d2 := a.Directories[i]; !proto.Equal(d1, d2) {
 			log.Warning("%s%s %s / %s %s", indent, d1.Name, d1.Digest.Hash, d2.Name, d2.Digest.Hash)
-			compareDirectories(client, d1.Digest, d2.Digest, indent+"  ")
+			compareDirectories(ctx, client, d1.Digest, d2.Digest, indent+"  ")
 		}
 	}
 	for i, s1 := range b.Symlinks {
@@ -203,7 +204,7 @@ func exe(is bool) string {
 	return ""
 }
 
-func show(client *client.Client) {
+func show(ctx context.Context, client *client.Client) {
 	for i, a := range opts.Show.Args.Actions {
 		if i > 0 {
 			fmt.Print("\n\n")
@@ -211,34 +212,34 @@ func show(client *client.Client) {
 		log.Notice("Action %s/%d:", a.Hash, a.Size)
 		action := &pb.Action{}
 		command := &pb.Command{}
-		mustGetProto(client, a.ToProto(), action)
-		mustGetProto(client, action.CommandDigest, command)
+		mustGetProto(ctx, client, a.ToProto(), action)
+		mustGetProto(ctx, client, action.CommandDigest, command)
 		if !opts.Show.NoInputs {
 			log.Notice("Inputs:")
-			showDir(client, action.InputRootDigest, "")
+			showDir(ctx, client, action.InputRootDigest, "")
 		}
-		if ar, err := client.CheckActionCache(context.Background(), &pb.Digest{Hash: a.Hash, SizeBytes: int64(a.Size)}); err != nil {
+		if ar, err := client.CheckActionCache(ctx, &pb.Digest{Hash: a.Hash, SizeBytes: int64(a.Size)}); err != nil {
 			log.Error("Error retrieving action result: %s", err)
 		} else if ar == nil {
 			log.Notice("No result exists for this action")
 		} else {
 			log.Notice("Outputs:")
 			log.Notice("[%s/%08d] Action result", a.Hash, a.Size)
-			showActionResult(client, ar)
-			showOutput(client, ar, ar.StdoutDigest, "Standard output")
-			showOutput(client, ar, ar.StdoutDigest, "Standard error")
+			showActionResult(ctx, client, ar)
+			showOutput(ctx, client, ar, ar.StdoutDigest, "Standard output")
+			showOutput(ctx, client, ar, ar.StdoutDigest, "Standard error")
 		}
 	}
 }
 
-func showDir(client *client.Client, dg *pb.Digest, indent string) {
+func showDir(ctx context.Context, client *client.Client, dg *pb.Digest, indent string) {
 	dir := &pb.Directory{}
-	if _, err := client.ReadProto(context.Background(), digest.NewFromProtoUnvalidated(dg), dir); err != nil {
+	if _, err := client.ReadProto(ctx, digest.NewFromProtoUnvalidated(dg), dir); err != nil {
 		log.Error("[%s/%08d] %s: Not found!", dg.Hash, dg.SizeBytes, indent)
 		return
 	}
 	if dg := rexclient.PackDigest(dir); dg.Hash != "" {
-		if dgs, err := client.MissingBlobs(context.Background(), []digest.Digest{dg}); err != nil || len(dgs) > 0 {
+		if dgs, err := client.MissingBlobs(ctx, []digest.Digest{dg}); err != nil || len(dgs) > 0 {
 			log.Error("[%s/%08d] %s└─> Mettle pack not found!", dg.Hash, dg.Size, indent)
 		} else {
 			log.Notice("[%s/%08d] %s└─> Mettle pack", dg.Hash, dg.Size, indent)
@@ -246,20 +247,20 @@ func showDir(client *client.Client, dg *pb.Digest, indent string) {
 	}
 	for _, d := range dir.Directories {
 		log.Notice("[%s/%08d] %s%s/", d.Digest.Hash, d.Digest.SizeBytes, indent, d.Name)
-		showDir(client, d.Digest, indent+"  ")
+		showDir(ctx, client, d.Digest, indent+"  ")
 	}
 	for _, s := range dir.Symlinks {
 		log.Notice("[%s/%08d]%s%-50s -> %s", strings.Repeat(" ", 64), 0, indent, s.Name, s.Target)
 	}
-	showFiles(client, dir.Files, indent)
+	showFiles(ctx, client, dir.Files, indent)
 }
 
-func showFiles(client *client.Client, files []*pb.FileNode, indent string) {
+func showFiles(ctx context.Context, client *client.Client, files []*pb.FileNode, indent string) {
 	digests := make([]*pb.Digest, len(files))
 	for i, f := range files {
 		digests[i] = f.Digest
 	}
-	resp, err := client.FindMissingBlobs(context.Background(), &pb.FindMissingBlobsRequest{
+	resp, err := client.FindMissingBlobs(ctx, &pb.FindMissingBlobsRequest{
 		InstanceName: client.InstanceName,
 		BlobDigests:  digests,
 	})
@@ -280,7 +281,7 @@ func showFiles(client *client.Client, files []*pb.FileNode, indent string) {
 	}
 }
 
-func showActionResult(client *client.Client, ar *pb.ActionResult) {
+func showActionResult(ctx context.Context, client *client.Client, ar *pb.ActionResult) {
 	files := make([]*pb.FileNode, len(ar.OutputFiles))
 	for i, f := range ar.OutputFiles {
 		files[i] = &pb.FileNode{
@@ -288,25 +289,25 @@ func showActionResult(client *client.Client, ar *pb.ActionResult) {
 			Digest: f.Digest,
 		}
 	}
-	showFiles(client, files, "")
+	showFiles(ctx, client, files, "")
 	for _, d := range ar.OutputDirectories {
 		tree := &pb.Tree{}
-		if _, err := client.ReadProto(context.Background(), digest.NewFromProtoUnvalidated(d.TreeDigest), tree); err != nil {
+		if _, err := client.ReadProto(ctx, digest.NewFromProtoUnvalidated(d.TreeDigest), tree); err != nil {
 			log.Error("Failed to download output tree: %s", err)
 		} else {
 			log.Notice("[%s/%08d] %s", d.TreeDigest.Hash, d.TreeDigest.SizeBytes, d.Path)
 			dg, _ := digest.NewFromMessage(tree.Root)
-			showDir(client, dg.ToProto(), strings.Repeat("  ", strings.Count(d.Path, "/")+1))
+			showDir(ctx, client, dg.ToProto(), strings.Repeat("  ", strings.Count(d.Path, "/")+1))
 		}
 	}
 }
 
-func showOutput(client *client.Client, ar *pb.ActionResult, dg *pb.Digest, name string) {
+func showOutput(ctx context.Context, client *client.Client, ar *pb.ActionResult, dg *pb.Digest, name string) {
 	if dg == nil {
 		return
 	}
 	log.Notice("%s [%s/%08d]:", name, dg.Hash, dg.SizeBytes)
-	b, _, err := client.ReadBlob(context.Background(), digest.NewFromProtoUnvalidated(dg))
+	b, _, err := client.ReadBlob(ctx, digest.NewFromProtoUnvalidated(dg))
 	if err != nil {
 		log.Errorf("Failed to fetch blob: %s", err)
 		return
@@ -314,8 +315,8 @@ func showOutput(client *client.Client, ar *pb.ActionResult, dg *pb.Digest, name 
 	fmt.Println(string(b))
 }
 
-func topn() error {
-	actions, err := gc.Sizes(opts.Storage.Storage, opts.Storage.InstanceName, "", opts.Storage.TLS, opts.TopN.N)
+func topn(ctx context.Context) error {
+	actions, err := gc.Sizes(ctx, opts.Storage.Storage, opts.Storage.InstanceName, "", opts.Storage.TLS, opts.TopN.N)
 	if err != nil {
 		return err
 	}
@@ -332,8 +333,8 @@ func topn() error {
 	return nil
 }
 
-func mostused() error {
-	allBlobs, err := gc.BlobUsage(opts.Storage.Storage, opts.Storage.InstanceName, "", opts.Storage.TLS)
+func mostused(ctx context.Context) error {
+	allBlobs, err := gc.BlobUsage(ctx, opts.Storage.Storage, opts.Storage.InstanceName, "", opts.Storage.TLS)
 	if err != nil {
 		return err
 	}

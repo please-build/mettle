@@ -1,7 +1,6 @@
 package rpc
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -18,7 +17,7 @@ func TestValidVersion(t *testing.T) {
 
 	// Helper function. Returns true if this update would trigger disabling the worker.
 	update := func(name, version string) bool {
-		r, err := s.Update(context.Background(), &pb.Worker{
+		r, err := s.Update(t.Context(), &pb.Worker{
 			Name:       name,
 			Version:    version,
 			Healthy:    true,
@@ -55,14 +54,14 @@ func TestListWorkers(t *testing.T) {
 		Healthy:    true,
 		UpdateTime: now,
 	}
-	s.Update(context.Background(), worker1)
-	s.Update(context.Background(), worker2)
-	resp, err := s.ListWorkers(context.Background(), &pb.ListWorkersRequest{})
+	s.Update(t.Context(), worker1)
+	s.Update(t.Context(), worker2)
+	resp, err := s.ListWorkers(t.Context(), &pb.ListWorkersRequest{})
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(resp.Workers))
 	assert.True(t, proto.Equal(worker1, resp.Workers[0]))
 	assert.True(t, proto.Equal(worker2, resp.Workers[1]))
-	resp, err = s.ListWorkers(context.Background(), &pb.ListWorkersRequest{Hostname: "helium"})
+	resp, err = s.ListWorkers(t.Context(), &pb.ListWorkersRequest{Hostname: "helium"})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(resp.Workers))
 	assert.True(t, proto.Equal(worker2, resp.Workers[0]))

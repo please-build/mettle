@@ -100,7 +100,7 @@ func newRedisServer(t *testing.T, redisFails bool, hooks ...redis.Hook) (*server
 	for _, h := range hooks {
 		rc.AddHook(h)
 	}
-	s := createServer("mem://", 5, 1000, 10_000_000, rc, testLargeBlobSize)
+	s := createServer(t.Context(), "mem://", 5, 1000, 10_000_000, rc, testLargeBlobSize)
 	if redisFails {
 		mr.Close()
 	}

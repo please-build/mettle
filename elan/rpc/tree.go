@@ -12,7 +12,7 @@ import (
 
 // getTree returns a channel to iterate over all the directories recursively under the given one.
 // The responses are not necessarily returned in any particular order.
-func (s *server) getTree(digest *pb.Digest, stopAtPack bool) ([]*pb.Directory, error) {
+func (s *server) getTree(ctx context.Context, digest *pb.Digest, stopAtPack bool) ([]*pb.Directory, error) {
 	dir := &pb.Directory{}
 	if digest.SizeBytes == 0 && digest.Hash == emptyHash {
 		return []*pb.Directory{dir}, nil
@@ -23,7 +23,7 @@ func (s *server) getTree(digest *pb.Digest, stopAtPack bool) ([]*pb.Directory, e
 		return d, nil
 	}
 	dirCacheMisses.Inc()
-	if err := s.readBlobIntoMessage(context.Background(), "cas", digest, dir); err != nil {
+	if err := s.readBlobIntoMessage(ctx, "cas", digest, dir); err != nil {
 		return nil, err
 	}
 	ret := []*pb.Directory{dir}
@@ -36,7 +36,7 @@ func (s *server) getTree(digest *pb.Digest, stopAtPack bool) ([]*pb.Directory, e
 	var mutex sync.Mutex
 	for _, child := range dir.Directories {
 		g.Go(func() error {
-			dirs, err := s.getTree(child.Digest, stopAtPack)
+			dirs, err := s.getTree(ctx, child.Digest, stopAtPack)
 			mutex.Lock()
 			defer mutex.Unlock()
 			ret = append(ret, dirs...)

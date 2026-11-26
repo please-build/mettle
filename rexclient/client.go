@@ -19,9 +19,9 @@ const CompressionThreshold = 1024
 
 // New creates a new remote execution client.
 // It automatically handles some things like compression.
-func New(instanceName, url string, tls bool, tokenFile string) (*client.Client, error) {
+func New(ctx context.Context, instanceName, url string, tls bool, tokenFile string) (*client.Client, error) {
 	log.Notice("Dialling remote %s...", url)
-	client, err := client.NewClient(context.Background(), instanceName,
+	client, err := client.NewClient(ctx, instanceName,
 		client.DialParams{
 			Service:            url,
 			NoSecurity:         !tls,
@@ -44,8 +44,8 @@ func New(instanceName, url string, tls bool, tokenFile string) (*client.Client, 
 }
 
 // MustNew is like New but dies on errors.
-func MustNew(instanceName, url string, tls bool, tokenFile string) *client.Client {
-	client, err := New(instanceName, url, tls, tokenFile)
+func MustNew(ctx context.Context, instanceName, url string, tls bool, tokenFile string) *client.Client {
+	client, err := New(ctx, instanceName, url, tls, tokenFile)
 	if err != nil {
 		log.Fatalf("Failed to contact remote server: %s", err)
 	}

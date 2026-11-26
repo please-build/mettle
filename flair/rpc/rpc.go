@@ -41,7 +41,7 @@ var logr = logrus.New()
 var emptyHash = digest.Empty.Hash
 
 // ServeForever serves on the given port until terminated.
-func ServeForever(opts grpcutil.Opts, casReplicator, assetReplicator, executorReplicator *trie.Replicator, timeout time.Duration) {
+func ServeForever(ctx context.Context, opts grpcutil.Opts, casReplicator, assetReplicator, executorReplicator *trie.Replicator, timeout time.Duration) {
 	srv := &server{
 		replicator:      casReplicator,
 		assetReplicator: assetReplicator,
@@ -147,7 +147,7 @@ func (s *server) GetCapabilities(ctx context.Context, req *pb.GetCapabilitiesReq
 }
 
 func (s *server) GetActionResult(ctx context.Context, req *pb.GetActionResultRequest) (ar *pb.ActionResult, err error) {
-	err = s.replicator.SequentialDigest(req.ActionDigest, func(srv *trie.Server) error {
+	err = s.replicator.SequentialDigest(ctx, req.ActionDigest, func(srv *trie.Server) error {
 		ctx, cancel := context.WithTimeout(ctx, s.timeout)
 		defer cancel()
 		a, e := srv.AC.GetActionResult(ctx, req)
@@ -160,7 +160,7 @@ func (s *server) GetActionResult(ctx context.Context, req *pb.GetActionResultReq
 }
 
 func (s *server) UpdateActionResult(ctx context.Context, req *pb.UpdateActionResultRequest) (ar *pb.ActionResult, err error) {
-	err = s.replicator.ParallelDigest(req.ActionDigest, func(srv *trie.Server) error {
+	err = s.replicator.ParallelDigest(ctx, req.ActionDigest, func(srv *trie.Server) error {
 		ctx, cancel := context.WithTimeout(ctx, s.timeout)
 		defer cancel()
 		a, e := srv.AC.UpdateActionResult(ctx, req)
@@ -197,7 +197,7 @@ func (s *server) FindMissingBlobs(ctx context.Context, req *pb.FindMissingBlobsR
 			found := make(map[string]struct{}, len(b))
 			// This call is best-effort; if it fails we fail to populate found, and return more blobs
 			// as missing. That should not be a problem for the callers who will then simply upload them.
-			s.replicator.Parallel(srv.Start, func(srv *trie.Server) error {
+			s.replicator.Parallel(ctx, srv.Start, func(srv *trie.Server) error {
 				ctx, cancel := context.WithTimeout(ctx, s.timeout)
 				defer cancel()
 				r, err := srv.CAS.FindMissingBlobs(ctx, &pb.FindMissingBlobsRequest{
@@ -245,7 +245,7 @@ func (s *server) BatchUpdateBlobs(ctx context.Context, req *pb.BatchUpdateBlobsR
 	m := make(map[string][]*pb.BatchUpdateBlobsResponse_Response, len(blobs)*s.replicator.Replicas)
 	for srv, rs := range blobs {
 		g.Go(func() error {
-			return s.replicator.Parallel(srv.Start, func(srv *trie.Server) error {
+			return s.replicator.Parallel(ctx, srv.Start, func(srv *trie.Server) error {
 				ctx, cancel := context.WithTimeout(ctx, s.timeout)
 				defer cancel()
 				r, err := srv.CAS.BatchUpdateBlobs(ctx, &pb.BatchUpdateBlobsRequest{
@@ -305,7 +305,7 @@ func (s *server) BatchReadBlobs(ctx context.Context, req *pb.BatchReadBlobsReque
 
 	for srv, d := range blobs {
 		g.Go(func() error {
-			return s.replicator.SequentialAck(srv.Start, func(s2 *trie.Server) (bool, error) {
+			return s.replicator.SequentialAck(ctx, srv.Start, func(s2 *trie.Server) (bool, error) {
 				ctx, cancel := context.WithTimeout(ctx, s.timeout)
 				defer cancel()
 				r, err := s2.CAS.BatchReadBlobs(ctx, &pb.BatchReadBlobsRequest{
@@ -360,7 +360,7 @@ func (s *server) GetTree(req *pb.GetTreeRequest, srv pb.ContentAddressableStorag
 	var fetchDir func(digest *pb.Digest) error
 	fetchDir = func(digest *pb.Digest) error {
 		var resp *pb.BatchReadBlobsResponse
-		if err := s.replicator.SequentialDigest(digest, func(s2 *trie.Server) error {
+		if err := s.replicator.SequentialDigest(ctx, digest, func(s2 *trie.Server) error {
 			ctx, cancel := context.WithTimeout(ctx, s.timeout)
 			defer cancel()
 			r, err := s2.CAS.BatchReadBlobs(ctx, &pb.BatchReadBlobsRequest{
@@ -421,7 +421,7 @@ func (s *server) Read(req *bs.ReadRequest, srv bs.ByteStream_ReadServer) error {
 	}
 	// This needs a little bookkeeping since we can fail partway and restart on another server.
 	// That's actually OK as long as we jiggle the ReadOffset appropriately.
-	return s.replicator.Sequential(hash, func(s2 *trie.Server) error {
+	return s.replicator.Sequential(srv.Context(), hash, func(s2 *trie.Server) error {
 		ctx, update := withRollingTimeout(srv.Context(), s.timeout)
 		client, err := s2.BS.Read(ctx, req)
 		if err != nil {
@@ -481,7 +481,7 @@ func (s *server) Write(srv bs.ByteStream_WriteServer) error {
 		}
 	})
 	var resp *bs.WriteResponse
-	if err := s.replicator.Parallel(hash, func(s2 *trie.Server) error {
+	if err := s.replicator.Parallel(srv.Context(), hash, func(s2 *trie.Server) error {
 		ctx, update := withRollingTimeout(srv.Context(), s.timeout)
 		ch := <-chch
 		defer func() {
@@ -518,7 +518,7 @@ func (s *server) QueryWriteStatus(ctx context.Context, req *bs.QueryWriteStatusR
 	if err != nil {
 		return nil, err
 	}
-	err = s.replicator.Sequential(hash, func(srv *trie.Server) error {
+	err = s.replicator.Sequential(ctx, hash, func(srv *trie.Server) error {
 		ctx, cancel := context.WithTimeout(ctx, s.timeout)
 		defer cancel()
 		r, e := srv.BS.QueryWriteStatus(ctx, req)
@@ -540,7 +540,7 @@ func (s *server) bytestreamBlobName(bytestream string) (string, error) {
 }
 
 func (s *server) FetchDirectory(ctx context.Context, req *apb.FetchDirectoryRequest) (resp *apb.FetchDirectoryResponse, err error) {
-	err = s.assetReplicator.Sequential(s.assetHash(req.Qualifiers), func(s *trie.Server) error {
+	err = s.assetReplicator.Sequential(ctx, s.assetHash(req.Qualifiers), func(s *trie.Server) error {
 		resp, err = s.Fetch.FetchDirectory(ctx, req)
 		return err
 	})
@@ -548,7 +548,7 @@ func (s *server) FetchDirectory(ctx context.Context, req *apb.FetchDirectoryRequ
 }
 
 func (s *server) FetchBlob(ctx context.Context, req *apb.FetchBlobRequest) (resp *apb.FetchBlobResponse, err error) {
-	err = s.assetReplicator.Sequential(s.assetHash(req.Qualifiers), func(srv *trie.Server) error {
+	err = s.assetReplicator.Sequential(ctx, s.assetHash(req.Qualifiers), func(srv *trie.Server) error {
 		resp, err = srv.Fetch.FetchBlob(ctx, req)
 		return err
 	})
@@ -578,7 +578,7 @@ func (s *server) assetHash(quals []*apb.Qualifier) string {
 }
 
 func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServer) error {
-	return s.exeReplicator.SequentialDigest(req.ActionDigest, func(srv *trie.Server) error {
+	return s.exeReplicator.SequentialDigest(stream.Context(), req.ActionDigest, func(srv *trie.Server) error {
 		client, err := srv.Exe.Execute(s.forwardMetadata(stream.Context()), req)
 		if err != nil {
 			return err
@@ -588,7 +588,7 @@ func (s *server) Execute(req *pb.ExecuteRequest, stream pb.Execution_ExecuteServ
 }
 
 func (s *server) WaitExecution(req *pb.WaitExecutionRequest, stream pb.Execution_WaitExecutionServer) error {
-	return s.exeReplicator.Sequential(req.Name, func(srv *trie.Server) error {
+	return s.exeReplicator.Sequential(stream.Context(), req.Name, func(srv *trie.Server) error {
 		client, err := srv.Exe.WaitExecution(s.forwardMetadata(stream.Context()), req)
 		if err != nil {
 			return err
@@ -629,7 +629,7 @@ func (s *server) List(ctx context.Context, req *ppb.ListRequest) (*ppb.ListRespo
 	resp := &ppb.ListResponse{}
 	ars := map[string]*ppb.ActionResult{}
 	blobs := map[string]*ppb.Blob{}
-	err := s.replicator.Parallel(req.Prefix, func(srv *trie.Server) error {
+	err := s.replicator.Parallel(ctx, req.Prefix, func(srv *trie.Server) error {
 		ctx, cancel := context.WithTimeout(ctx, 3*s.timeout) // Multiply up timeout since this operation can be expensive.
 		defer cancel()
 		r, err := srv.GC.List(ctx, req)

@@ -50,7 +50,7 @@ var busyWorkers = prometheus.NewGauge(prometheus.GaugeOpts{
 })
 
 // ServeForever serves on the given port until terminated.
-func ServeForever(opts grpcutil.Opts, httpPort int, maxAge time.Duration, minProportion float64, audience string, allowedUsers []string) {
+func ServeForever(ctx context.Context, opts grpcutil.Opts, httpPort int, maxAge time.Duration, minProportion float64, audience string, allowedUsers []string) {
 	srv := newServer(minProportion)
 	prometheus.MustRegister(srv)
 	lis, s := grpcutil.NewServer(opts)
@@ -60,7 +60,7 @@ func ServeForever(opts grpcutil.Opts, httpPort int, maxAge time.Duration, minPro
 	mux.HandleFunc("/workers", srv.ServeWorkers)
 	mux.HandleFunc("/", srv.ServeAsset)
 	mux.HandleFunc("/disable", srv.ServeDisable)
-	authed := maybeAddValidation(mux, audience, allowedUsers)
+	authed := maybeAddValidation(ctx, mux, audience, allowedUsers)
 	log.Notice("Serving HTTP on %s:%d", opts.Host, httpPort)
 	go http.ListenAndServe(fmt.Sprintf("%s:%d", opts.Host, httpPort), authed)
 	go srv.Clean(maxAge)

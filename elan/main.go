@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"github.com/peterebden/go-cli-init/v4/flags"
 
 	"github.com/please-build/mettle/cli"
@@ -38,5 +39,5 @@ func main() {
 	_, info := cli.ParseFlagsOrDie("Elan", &opts, &opts.Logging)
 	_, readRedis := opts.Redis.Clients()
 	go cli.ServeAdmin("elan", opts.Admin, info)
-	rpc.ServeForever(opts.GRPC, opts.Storage, opts.Parallelism, opts.DirCacheSize, int64(opts.KnownBlobCacheSize), readRedis, opts.MaxSize)
+	rpc.ServeForever(context.Background(), opts.GRPC, opts.Storage, opts.Parallelism, opts.DirCacheSize, int64(opts.KnownBlobCacheSize), readRedis, opts.MaxSize)
 }

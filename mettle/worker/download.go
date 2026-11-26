@@ -3,6 +3,7 @@ package worker
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -51,9 +52,9 @@ type fileNode struct {
 }
 
 // downloadDirectory downloads & writes out a single Directory proto and all its children.
-func (w *worker) downloadDirectory(digest *pb.Digest, usePacks bool) error {
+func (w *worker) downloadDirectory(ctx context.Context, digest *pb.Digest, usePacks bool) error {
 	ts1 := time.Now()
-	dirs, err := w.client.GetDirectoryTree(digest, usePacks)
+	dirs, err := w.client.GetDirectoryTree(ctx, digest, usePacks)
 	if err != nil {
 		return err
 	}
@@ -68,7 +69,7 @@ func (w *worker) downloadDirectory(digest *pb.Digest, usePacks bool) error {
 		return err
 	}
 	ts3 := time.Now()
-	err = w.downloadAllFiles(files, packs)
+	err = w.downloadAllFiles(ctx, files, packs)
 	w.metadataFetch = ts2.Sub(ts1)
 	w.dirCreation = ts3.Sub(ts2)
 	w.fileDownload = time.Since(ts3)
@@ -131,7 +132,7 @@ func (w *worker) createDirectory(dirs map[string]*pb.Directory, files map[sdkdig
 }
 
 // downloadAllFiles downloads all the files for a single build action.
-func (w *worker) downloadAllFiles(files map[sdkdigest.Digest][]fileNode, packs map[sdkdigest.Digest][]string) error {
+func (w *worker) downloadAllFiles(ctx context.Context, files map[sdkdigest.Digest][]fileNode, packs map[sdkdigest.Digest][]string) error {
 	var g errgroup.Group
 
 	fileNodes := map[sdkdigest.Digest][]fileNode{}
@@ -160,7 +161,7 @@ func (w *worker) downloadAllFiles(files map[sdkdigest.Digest][]fileNode, packs m
 			w.downloadedBytes += dg.Size
 			fns := filenames
 			dg := dg
-			g.Go(func() error { return w.downloadFile(fns, dg) })
+			g.Go(func() error { return w.downloadFile(ctx, fns, dg) })
 			continue
 		}
 		// Check cache for this blob (we never cache blobs that are big enough not to be batchable)
@@ -179,7 +180,7 @@ func (w *worker) downloadAllFiles(files map[sdkdigest.Digest][]fileNode, packs m
 			// This blob on its own is OK but will exceed the total.
 			// Download what we have so far then deal with it.
 			fns := fileNodes
-			g.Go(func() error { return w.downloadFiles(fns) })
+			g.Go(func() error { return w.downloadFiles(ctx, fns) })
 			fileNodes = map[sdkdigest.Digest][]fileNode{}
 			totalSize = 0
 		}
@@ -189,22 +190,22 @@ func (w *worker) downloadAllFiles(files map[sdkdigest.Digest][]fileNode, packs m
 	}
 	// If we have anything left over, handle them now.
 	if len(fileNodes) != 0 {
-		g.Go(func() error { return w.downloadFiles(fileNodes) })
+		g.Go(func() error { return w.downloadFiles(ctx, fileNodes) })
 	}
 	for dg, paths := range packs {
 		g.Go(func() error {
-			return w.downloadPack(dg, paths)
+			return w.downloadPack(ctx, dg, paths)
 		})
 	}
 	return g.Wait()
 }
 
 // downloadPack downloads a pack file to the given path
-func (w *worker) downloadPack(dg sdkdigest.Digest, paths []string) error {
+func (w *worker) downloadPack(ctx context.Context, dg sdkdigest.Digest, paths []string) error {
 	log.Debug("Downloading pack of %d bytes...", dg.Size)
 	packsDownloaded.Inc()
 	if w.fileCache != nil {
-		if downloaded, err := w.downloadPackFromCache(dg, paths); err != nil {
+		if downloaded, err := w.downloadPackFromCache(ctx, dg, paths); err != nil {
 			return err
 		} else if downloaded {
 			return nil
@@ -213,7 +214,7 @@ func (w *worker) downloadPack(dg sdkdigest.Digest, paths []string) error {
 	w.limiter <- struct{}{}
 	defer func() { <-w.limiter }()
 	// TODO(peterebden): Look into streaming this sometime.
-	b, err := w.client.ReadBlob(dg.ToProto())
+	b, err := w.client.ReadBlob(ctx, dg.ToProto())
 	if err != nil {
 		return err
 	}
@@ -226,7 +227,7 @@ func (w *worker) downloadPack(dg sdkdigest.Digest, paths []string) error {
 }
 
 // downloadPack downloads a pack file to the given path
-func (w *worker) downloadPackFromCache(dg sdkdigest.Digest, paths []string) (bool, error) {
+func (w *worker) downloadPackFromCache(ctx context.Context, dg sdkdigest.Digest, paths []string) (bool, error) {
 	w.iolimiter <- struct{}{}
 	defer func() { <-w.iolimiter }()
 	if rc := w.fileCache.RetrieveStream(dg.Hash); rc != nil {
@@ -297,7 +298,7 @@ func (w *worker) writePack(r io.Reader, paths []string) error {
 
 // downloadFiles downloads a set of files to disk in a batch.
 // The total size must be lower than whatever limits are considered relevant.
-func (w *worker) downloadFiles(files map[sdkdigest.Digest][]fileNode) error {
+func (w *worker) downloadFiles(ctx context.Context, files map[sdkdigest.Digest][]fileNode) error {
 	w.limiter <- struct{}{}
 	defer func() { <-w.limiter }()
 
@@ -306,7 +307,7 @@ func (w *worker) downloadFiles(files map[sdkdigest.Digest][]fileNode) error {
 	for dg := range files {
 		digests = append(digests, dg)
 	}
-	responses, err := w.client.BatchDownload(digests)
+	responses, err := w.client.BatchDownload(ctx, digests)
 	if err != nil {
 		return err
 	}
@@ -325,13 +326,13 @@ func (w *worker) downloadFiles(files map[sdkdigest.Digest][]fileNode) error {
 }
 
 // downloadFile downloads a single file to disk.
-func (w *worker) downloadFile(files []fileNode, dg sdkdigest.Digest) error {
+func (w *worker) downloadFile(ctx context.Context, files []fileNode, dg sdkdigest.Digest) error {
 	w.limiter <- struct{}{}
 	defer func() { <-w.limiter }()
 
 	log.Debug("Downloading file of %d bytes...", dg.Size)
 	filename := files[0].Name
-	if err := w.client.ReadToFile(dg, filename, w.compressor(files, dg.Size) != pb.Compressor_ZSTD); err != nil {
+	if err := w.client.ReadToFile(ctx, dg, filename, w.compressor(files, dg.Size) != pb.Compressor_ZSTD); err != nil {
 		return grpcstatus.Errorf(grpcstatus.Code(err), "Failed to download file: %s", err)
 	} else if err := os.Chmod(filename, fileMode(files[0].IsExecutable)); err != nil {
 		return fmt.Errorf("Failed to chmod file: %s", err)

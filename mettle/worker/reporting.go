@@ -42,7 +42,7 @@ func (w *worker) currentTaskID() string {
 }
 
 // sendReports sends reports to Lucidity indefinitely.
-func (w *worker) sendReports() {
+func (w *worker) sendReports(ctx context.Context) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		log.Error("Failed to retrieve hostname: %s", err)
@@ -53,18 +53,18 @@ func (w *worker) sendReports() {
 		select {
 		case report := <-w.lucidChan:
 			report.Hostname = hostname
-			w.sendReport(report)
+			w.sendReport(ctx, report)
 			last = report
 		case <-t.C:
 			if last != nil {
-				w.sendReport(last)
+				w.sendReport(ctx, last)
 			}
 		}
 	}
 }
 
-func (w *worker) sendReport(report *lpb.Worker) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (w *worker) sendReport(ctx context.Context, report *lpb.Worker) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if resp, err := w.lucidity.Update(ctx, report); err != nil {
 		log.Warning("Failed to report status to Lucidity: %s", err)
@@ -150,19 +150,26 @@ func (w *worker) waitIfDisabled() {
 }
 
 // waitForLiveConnection waits for the connection to be alive to the remote servers.
-func (w *worker) waitForLiveConnection() {
-	if w.checkLiveConnection() {
+func (w *worker) waitForLiveConnection(ctx context.Context) {
+	if w.checkLiveConnection(ctx) {
 		return
 	}
-	for range time.NewTicker(1 * time.Minute).C {
-		if w.checkLiveConnection() {
+	t := time.NewTicker(1 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case <-t.C:
+			if w.checkLiveConnection(ctx) {
+				return
+			}
 		}
 	}
 }
 
-func (w *worker) checkLiveConnection() bool {
-	if err := w.client.Healthcheck(); err != nil {
+func (w *worker) checkLiveConnection(ctx context.Context) bool {
+	if err := w.client.Healthcheck(ctx); err != nil {
 		log.Errorf("Failed to contact remote server: %s", err)
 		return false
 	}

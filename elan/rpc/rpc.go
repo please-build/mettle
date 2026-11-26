@@ -156,12 +156,12 @@ func init() {
 }
 
 // ServeForever serves on the given port until terminated.
-func ServeForever(opts grpcutil.Opts, storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) {
-	lis, s := startServer(opts, storage, parallelism, maxDirCacheSize, maxKnownBlobCacheSize, readRedis, largeBlobSize)
+func ServeForever(ctx context.Context, opts grpcutil.Opts, storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) {
+	lis, s := startServer(ctx, opts, storage, parallelism, maxDirCacheSize, maxKnownBlobCacheSize, readRedis, largeBlobSize)
 	grpcutil.ServeForever(lis, s)
 }
 
-func createServer(storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) *server {
+func createServer(ctx context.Context, storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) *server {
 	dec, _ := zstd.NewReader(nil)
 	enc := mustNewEncoder(nil)
 	if largeBlobSize <= 0 {
@@ -171,7 +171,7 @@ func createServer(storage string, parallelism int, maxDirCacheSize, maxKnownBlob
 		bytestreamRe:   regexp.MustCompile("(?:uploads/[0-9a-f-]+/)?(blobs|compressed-blobs/zstd)/([0-9a-f]+)/([0-9]+)"),
 		storageRoot:    strings.TrimPrefix(storage, "file://"),
 		isFileStorage:  strings.HasPrefix(storage, "file://"),
-		bucket:         mustOpenStorage(storage),
+		bucket:         mustOpenStorage(ctx, storage),
 		limiter:        make(chan struct{}, parallelism),
 		dirCache:       mustCache(maxDirCacheSize),
 		knownBlobCache: mustCache(maxKnownBlobCacheSize),
@@ -182,8 +182,8 @@ func createServer(storage string, parallelism int, maxDirCacheSize, maxKnownBlob
 	}
 }
 
-func startServer(opts grpcutil.Opts, storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) (net.Listener, *grpc.Server) {
-	srv := createServer(storage, parallelism, maxDirCacheSize, maxKnownBlobCacheSize, readRedis, largeBlobSize)
+func startServer(ctx context.Context, opts grpcutil.Opts, storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) (net.Listener, *grpc.Server) {
+	srv := createServer(ctx, storage, parallelism, maxDirCacheSize, maxKnownBlobCacheSize, readRedis, largeBlobSize)
 	lis, s := grpcutil.NewServer(opts)
 	pb.RegisterCapabilitiesServer(s, srv)
 	pb.RegisterActionCacheServer(s, srv)
@@ -609,7 +609,7 @@ func (s *server) GetTree(req *pb.GetTreeRequest, srv pb.ContentAddressableStorag
 	} else if req.RootDigest == nil {
 		return status.Errorf(codes.InvalidArgument, "missing root_digest field")
 	}
-	dirs, err := s.getTree(req.RootDigest, rexclient.ShouldStopAtPack(srv.Context()))
+	dirs, err := s.getTree(srv.Context(), req.RootDigest, rexclient.ShouldStopAtPack(srv.Context()))
 	if err != nil {
 		return err
 	}

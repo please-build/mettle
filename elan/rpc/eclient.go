@@ -22,12 +22,12 @@ type elanClient struct {
 	timeout time.Duration
 }
 
-func (e *elanClient) Healthcheck() error {
+func (e *elanClient) Healthcheck(ctx context.Context) error {
 	return nil // We don't have a remote server to check for health
 }
 
-func (e *elanClient) ReadBlob(dg *pb.Digest) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+func (e *elanClient) ReadBlob(ctx context.Context, dg *pb.Digest) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	blob, err := e.s.readAllBlob(ctx, "cas", dg)
 	if err != nil {
@@ -36,7 +36,7 @@ func (e *elanClient) ReadBlob(dg *pb.Digest) ([]byte, error) {
 	return blob, nil
 }
 
-func (e *elanClient) WriteBlob(b []byte) (*pb.Digest, error) {
+func (e *elanClient) WriteBlob(ctx context.Context, b []byte) (*pb.Digest, error) {
 	dg := digest.NewFromBlob(b).ToProto()
 	if dg.Hash == digest.Empty.Hash {
 		return dg, nil
@@ -47,7 +47,7 @@ func (e *elanClient) WriteBlob(b []byte) (*pb.Digest, error) {
 		b = e.s.compressor.EncodeAll(b, make([]byte, 0, len(b)))
 	}
 	key := e.s.compressedKey("cas", dg, compressed)
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	if e.s.blobExists(ctx, CASPrefix, dg, compressed, false) {
 		return dg, nil
@@ -58,13 +58,13 @@ func (e *elanClient) WriteBlob(b []byte) (*pb.Digest, error) {
 	return dg, nil
 }
 
-func (e *elanClient) UpdateActionResult(req *pb.UpdateActionResultRequest) (*pb.ActionResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+func (e *elanClient) UpdateActionResult(ctx context.Context, req *pb.UpdateActionResultRequest) (*pb.ActionResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	return e.s.UpdateActionResult(ctx, req)
 }
 
-func (e *elanClient) UploadIfMissing(entries []*uploadinfo.Entry, compressors []pb.Compressor_Value) error {
+func (e *elanClient) UploadIfMissing(ctx context.Context, entries []*uploadinfo.Entry, compressors []pb.Compressor_Value) error {
 	m := make(map[string]*uploadinfo.Entry, len(entries))
 	m2 := make(map[string]pb.Compressor_Value, len(entries))
 	digests := make([]*pb.Digest, len(entries))
@@ -73,7 +73,7 @@ func (e *elanClient) UploadIfMissing(entries []*uploadinfo.Entry, compressors []
 		m2[e.Digest.Hash] = compressors[i]
 		digests[i] = e.Digest.ToProto()
 	}
-	resp, err := e.s.FindMissingBlobs(context.Background(), &pb.FindMissingBlobsRequest{
+	resp, err := e.s.FindMissingBlobs(ctx, &pb.FindMissingBlobsRequest{
 		BlobDigests: digests,
 	})
 	if err != nil {
@@ -84,13 +84,13 @@ func (e *elanClient) UploadIfMissing(entries []*uploadinfo.Entry, compressors []
 		entry := m[dg.Hash]
 		compressor := m2[dg.Hash]
 		g.Go(func() error {
-			return e.uploadOne(entry, compressor)
+			return e.uploadOne(ctx, entry, compressor)
 		})
 	}
 	return g.Wait()
 }
 
-func (e *elanClient) uploadOne(entry *uploadinfo.Entry, compressor pb.Compressor_Value) (err error) {
+func (e *elanClient) uploadOne(ctx context.Context, entry *uploadinfo.Entry, compressor pb.Compressor_Value) (err error) {
 	if entry.Digest.Hash == digest.Empty.Hash {
 		return nil
 	}
@@ -98,7 +98,7 @@ func (e *elanClient) uploadOne(entry *uploadinfo.Entry, compressor pb.Compressor
 	key := e.s.compressedKey("cas", entry.Digest.ToProto(), compressed)
 	e.s.limiter <- struct{}{}
 	defer func() { <-e.s.limiter }()
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	if len(entry.Contents) > 0 {
 		if compressed {
@@ -141,10 +141,10 @@ func (e *elanClient) uploadOne(entry *uploadinfo.Entry, compressor pb.Compressor
 	return nil
 }
 
-func (e *elanClient) BatchDownload(digests []digest.Digest) (map[digest.Digest][]byte, error) {
+func (e *elanClient) BatchDownload(ctx context.Context, digests []digest.Digest) (map[digest.Digest][]byte, error) {
 	m := make(map[digest.Digest][]byte, len(digests))
 	for _, dg := range digests {
-		d, err := e.downloadOne(dg.ToProto())
+		d, err := e.downloadOne(ctx, dg.ToProto())
 		if err != nil {
 			return nil, err
 		}
@@ -153,14 +153,14 @@ func (e *elanClient) BatchDownload(digests []digest.Digest) (map[digest.Digest][
 	return m, nil
 }
 
-func (e *elanClient) downloadOne(dg *pb.Digest) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+func (e *elanClient) downloadOne(ctx context.Context, dg *pb.Digest) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	b, _, err := e.s.readAllBlobBatched(ctx, "cas", dg, true, false, false)
 	return b, err
 }
 
-func (e *elanClient) ReadToFile(dg digest.Digest, filename string, compressed bool) error {
+func (e *elanClient) ReadToFile(ctx context.Context, dg digest.Digest, filename string, compressed bool) error {
 	f, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -169,7 +169,7 @@ func (e *elanClient) ReadToFile(dg digest.Digest, filename string, compressed bo
 	if dg == digest.Empty {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	r, _, err := e.s.readCompressed(ctx, "cas", dg.ToProto(), false, 0, -1)
 	if err != nil {
@@ -180,6 +180,6 @@ func (e *elanClient) ReadToFile(dg digest.Digest, filename string, compressed bo
 	return err
 }
 
-func (e *elanClient) GetDirectoryTree(dg *pb.Digest, stopAtPack bool) ([]*pb.Directory, error) {
-	return e.s.getTree(dg, stopAtPack)
+func (e *elanClient) GetDirectoryTree(ctx context.Context, dg *pb.Digest, stopAtPack bool) ([]*pb.Directory, error) {
+	return e.s.getTree(ctx, dg, stopAtPack)
 }

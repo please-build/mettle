@@ -30,31 +30,31 @@ var logr = logrus.New()
 const eternity = 1000000 * time.Hour
 
 // RunForever runs indefinitely, periodically hitting the remote server and possibly GC'ing it.
-func RunForever(url, instanceName, tokenFile string, tls bool, minAge, frequency time.Duration, replicationFactor int) {
+func RunForever(ctx context.Context, url, instanceName, tokenFile string, tls bool, minAge, frequency time.Duration, replicationFactor int) {
 	for range time.NewTicker(frequency).C {
-		if err := Run(url, instanceName, tokenFile, tls, minAge, replicationFactor, false); err != nil {
+		if err := Run(ctx, url, instanceName, tokenFile, tls, minAge, replicationFactor, false); err != nil {
 			log.Error("Failed to GC: %s", err)
 		}
 	}
 }
 
 // Run runs once against the remote servers and triggers a GC if needed.
-func Run(url, instanceName, tokenFile string, tls bool, minAge time.Duration, replicationFactor int, dryRun bool) error {
+func Run(ctx context.Context, url, instanceName, tokenFile string, tls bool, minAge time.Duration, replicationFactor int, dryRun bool) error {
 	start := time.Now()
-	gc, err := newCollector(url, instanceName, tokenFile, tls, dryRun, minAge)
+	gc, err := newCollector(ctx, url, instanceName, tokenFile, tls, dryRun, minAge)
 	if err != nil {
 		return err
-	} else if err := gc.LoadAllBlobs(); err != nil {
+	} else if err := gc.LoadAllBlobs(ctx); err != nil {
 		return err
-	} else if err := gc.RemoveActionResults(); err != nil {
+	} else if err := gc.RemoveActionResults(ctx); err != nil {
 		return err
-	} else if err := gc.MarkReferencedBlobs(); err != nil {
+	} else if err := gc.MarkReferencedBlobs(ctx); err != nil {
 		return err
-	} else if err := gc.RemoveBlobs(); err != nil {
+	} else if err := gc.RemoveBlobs(ctx); err != nil {
 		return err
-	} else if err := gc.RemoveBrokenBlobs(); err != nil {
+	} else if err := gc.RemoveBrokenBlobs(ctx); err != nil {
 		return err
-	} else if err := gc.ReplicateBlobs(replicationFactor); err != nil {
+	} else if err := gc.ReplicateBlobs(ctx, replicationFactor); err != nil {
 		return err
 	}
 	log.Notice("Complete in %s!", time.Since(start).Truncate(time.Second))
@@ -62,62 +62,62 @@ func Run(url, instanceName, tokenFile string, tls bool, minAge time.Duration, re
 }
 
 // Delete deletes a series of build actions from the remote server.
-func Delete(url, instanceName, tokenFile string, tls bool, actions []*pb.Digest) error {
-	gc, err := newCollector(url, instanceName, tokenFile, tls, false, 0)
+func Delete(ctx context.Context, url, instanceName, tokenFile string, tls bool, actions []*pb.Digest) error {
+	gc, err := newCollector(ctx, url, instanceName, tokenFile, tls, false, 0)
 	if err != nil {
 		return err
 	}
-	return gc.RemoveSpecificBlobs(actions)
+	return gc.RemoveSpecificBlobs(ctx, actions)
 }
 
 // Clean cleans any build actions referencing missing blobs from the server.
-func Clean(url, instanceName, tokenFile string, tls, dryRun bool) error {
-	gc, err := newCollector(url, instanceName, tokenFile, tls, dryRun, eternity)
+func Clean(ctx context.Context, url, instanceName, tokenFile string, tls, dryRun bool) error {
+	gc, err := newCollector(ctx, url, instanceName, tokenFile, tls, dryRun, eternity)
 	if err != nil {
 		return err
-	} else if err := gc.LoadAllBlobs(); err != nil {
+	} else if err := gc.LoadAllBlobs(ctx); err != nil {
 		return err
 	}
 	gc.MarkActionResults()
-	if err := gc.MarkReferencedBlobs(); err != nil {
+	if err := gc.MarkReferencedBlobs(ctx); err != nil {
 		return err
 	}
-	return gc.RemoveBrokenBlobs()
+	return gc.RemoveBrokenBlobs(ctx)
 }
 
 // Sizes returns the sizes of the top N actions.
-func Sizes(url, instanceName, tokenFile string, tls bool, n int) ([]Action, error) {
-	gc, err := newCollector(url, instanceName, tokenFile, tls, true, eternity)
+func Sizes(ctx context.Context, url, instanceName, tokenFile string, tls bool, n int) ([]Action, error) {
+	gc, err := newCollector(ctx, url, instanceName, tokenFile, tls, true, eternity)
 	if err != nil {
 		return nil, err
-	} else if err := gc.LoadAllBlobs(); err != nil {
+	} else if err := gc.LoadAllBlobs(ctx); err != nil {
 		return nil, err
-	} else if err := gc.MarkReferencedBlobs(); err != nil {
+	} else if err := gc.MarkReferencedBlobs(ctx); err != nil {
 		return nil, err
 	}
 	return gc.Sizes(n), nil
 }
 
 // Replicate re-replicates any underreplicated blobs.
-func Replicate(url, instanceName, tokenFile string, tls bool, replicationFactor int, dryRun bool) error {
-	gc, err := newCollector(url, instanceName, tokenFile, tls, dryRun, eternity)
+func Replicate(ctx context.Context, url, instanceName, tokenFile string, tls bool, replicationFactor int, dryRun bool) error {
+	gc, err := newCollector(ctx, url, instanceName, tokenFile, tls, dryRun, eternity)
 	if err != nil {
 		return err
-	} else if err := gc.LoadAllBlobs(); err != nil {
+	} else if err := gc.LoadAllBlobs(ctx); err != nil {
 		return err
 	}
-	return gc.ReplicateBlobs(replicationFactor)
+	return gc.ReplicateBlobs(ctx, replicationFactor)
 }
 
 // BlobUsage returns the a series of blobs for analysis of how much they're used.
-func BlobUsage(url, instanceName, tokenFile string, tls bool) ([]Blob, error) {
-	gc, err := newCollector(url, instanceName, tokenFile, tls, true, eternity)
+func BlobUsage(ctx context.Context, url, instanceName, tokenFile string, tls bool) ([]Blob, error) {
+	gc, err := newCollector(ctx, url, instanceName, tokenFile, tls, true, eternity)
 	if err != nil {
 		return nil, err
-	} else if err := gc.LoadAllBlobs(); err != nil {
+	} else if err := gc.LoadAllBlobs(ctx); err != nil {
 		return nil, err
 	}
-	return gc.BlobUsage()
+	return gc.BlobUsage(ctx)
 }
 
 // An Action is a convenience type returned from Sizes.
@@ -147,8 +147,8 @@ type collector struct {
 	parallelism       int
 }
 
-func newCollector(url, instanceName, tokenFile string, tls, dryRun bool, minAge time.Duration) (*collector, error) {
-	client, err := rexclient.New(instanceName, url, tls, tokenFile)
+func newCollector(ctx context.Context, url, instanceName, tokenFile string, tls, dryRun bool, minAge time.Duration) (*collector, error) {
+	client, err := rexclient.New(ctx, instanceName, url, tls, tokenFile)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func newCollector(url, instanceName, tokenFile string, tls, dryRun bool, minAge 
 	}, nil
 }
 
-func (c *collector) LoadAllBlobs() error {
+func (c *collector) LoadAllBlobs(ctx context.Context) error {
 	log.Notice("Receiving current list of items...")
 	ch := newProgressBar("Enumerating blobs", 256)
 	defer func() {
@@ -186,7 +186,7 @@ func (c *collector) LoadAllBlobs() error {
 	for i := 0; i < 16; i++ {
 		g.Go(func() error {
 			for j := 0; j < 16; j++ {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+				ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 				defer cancel()
 				resp, err := c.gcclient.List(ctx, &ppb.ListRequest{
 					Prefix: hex.EncodeToString([]byte{byte(i*16 + j)}),
@@ -235,7 +235,7 @@ func min(a, b int) int {
 //     statement on output blobs above, if any input blob is missing, the action
 //     that was supposed to produce those will be marked as broken (and removed)
 //     anyway.
-func (c *collector) MarkReferencedBlobs() error {
+func (c *collector) MarkReferencedBlobs(ctx context.Context) error {
 	log.Notice("Finding referenced blobs...")
 	ch := newProgressBar("Checking action results", len(c.actionResults))
 	var live int64
@@ -255,7 +255,7 @@ func (c *collector) MarkReferencedBlobs() error {
 		go func(ars []*ppb.ActionResult) {
 			for _, ar := range ars {
 				if _, present := c.liveActionResults[ar.Hash]; present {
-					if err := c.markReferencedBlobs(ar); err != nil {
+					if err := c.markReferencedBlobs(ctx, ar); err != nil {
 						// Not fatal otherwise one bad action result will stop the whole show.
 						logr.WithFields(logrus.Fields{
 							"hash": ar.Hash,
@@ -289,7 +289,7 @@ func (c *collector) MarkActionResults() {
 }
 
 // RemoveActionResults removes ARs that should be deleted or marks them live.
-func (c *collector) RemoveActionResults() error {
+func (c *collector) RemoveActionResults(ctx context.Context) error {
 	log.Notice("Determining action results to remove...")
 	ars := []*ppb.Blob{}
 	numArs := 0
@@ -321,7 +321,7 @@ func (c *collector) RemoveActionResults() error {
 	step := numArs / c.parallelism
 	for i := 0; i < (c.parallelism + 1); i++ {
 		go func(ars []*ppb.Blob) {
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+			ctx, cancel := context.WithTimeout(ctx, 1*time.Hour)
 			defer cancel()
 			for _, ar := range ars {
 				logr.WithFields(logrus.Fields{
@@ -359,7 +359,7 @@ func (c *collector) RemoveActionResults() error {
 // RemoveBlobs goes through the list of blobs and tells mettle
 // to remove any that is not referenced by a live action result
 // (see `MarkReferencedBlobs` for this process).
-func (c *collector) RemoveBlobs() error {
+func (c *collector) RemoveBlobs(ctx context.Context) error {
 	log.Notice("Determining blobs to remove...")
 	blobs := make(map[string][]*ppb.Blob)
 	numBlobs := 0
@@ -390,7 +390,7 @@ func (c *collector) RemoveBlobs() error {
 	wg.Add(len(blobs))
 	for k, v := range blobs {
 		go func(prefix string, blobs []*ppb.Blob) {
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+			ctx, cancel := context.WithTimeout(ctx, 1*time.Hour)
 			defer cancel()
 			_, err := c.gcclient.Delete(ctx, &ppb.DeleteRequest{
 				Prefix: prefix,
@@ -413,7 +413,7 @@ func (c *collector) shouldDelete(ar *ppb.ActionResult) bool {
 }
 
 // RemoveSpecificBlobs removes blobs from the cache. It's best effort and returns a multierror or nil
-func (c *collector) RemoveSpecificBlobs(digests []*pb.Digest) error {
+func (c *collector) RemoveSpecificBlobs(ctx context.Context, digests []*pb.Digest) error {
 	for _, d := range digests {
 		delete(c.actionRFs, d.Hash)
 	}
@@ -433,7 +433,7 @@ func (c *collector) RemoveSpecificBlobs(digests []*pb.Digest) error {
 		time.Sleep(10 * time.Millisecond)
 		log.Notice("Deleted %d action results", len(digests))
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var merr *multierror.Error
 	for _, digest := range digests {
@@ -455,12 +455,12 @@ func (c *collector) RemoveSpecificBlobs(digests []*pb.Digest) error {
 }
 
 // RemoveBrokenBlobs removes any blobs previously marked as broken.
-func (c *collector) RemoveBrokenBlobs() error {
+func (c *collector) RemoveBrokenBlobs(ctx context.Context) error {
 	digests := make([]*pb.Digest, 0, len(c.brokenResults))
 	for h, s := range c.brokenResults {
 		digests = append(digests, &pb.Digest{Hash: h, SizeBytes: s})
 	}
-	return c.RemoveSpecificBlobs(digests)
+	return c.RemoveSpecificBlobs(ctx, digests)
 }
 
 // Sizes returns the sizes of the top n biggest actions.
@@ -486,11 +486,11 @@ func (c *collector) Sizes(n int) []Action {
 }
 
 // ReplicateBlobs re-replicates any blobs with a replication factor lower than expected.
-func (c *collector) ReplicateBlobs(rf int) error {
+func (c *collector) ReplicateBlobs(ctx context.Context, rf int) error {
 	blobs := c.underreplicatedDigests(c.blobRFs, c.blobSizes, rf)
 	ars := c.underreplicatedDigests(c.actionRFs, c.actionSizes, rf)
 	if err := c.replicateBlobs("blobs", blobs, func(dg *pb.Digest) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
 		blob, _, err := c.client.ReadBlob(ctx, digest.NewFromProtoUnvalidated(dg))
 		if err != nil {
@@ -502,7 +502,7 @@ func (c *collector) ReplicateBlobs(rf int) error {
 		return err
 	}
 	return c.replicateBlobs("action results", ars, func(dg *pb.Digest) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 		defer cancel()
 		ar, err := c.client.GetActionResult(ctx, &pb.GetActionResultRequest{
 			InstanceName: c.client.InstanceName,
@@ -562,7 +562,7 @@ func (c *collector) underreplicatedDigests(blobs map[string]int, sizes map[strin
 	return ret
 }
 
-func (c *collector) BlobUsage() ([]Blob, error) {
+func (c *collector) BlobUsage(ctx context.Context) ([]Blob, error) {
 	blobs := map[string]*Blob{}
 	var mutex sync.Mutex
 
@@ -613,7 +613,7 @@ func (c *collector) BlobUsage() ([]Blob, error) {
 	for i := 0; i < (c.parallelism + 1); i++ {
 		go func(ars []*ppb.ActionResult) {
 			for _, ar := range ars {
-				action, dirs, err := c.inputDirs(ar)
+				action, dirs, err := c.inputDirs(ctx, ar)
 				if err != nil {
 					logr.WithFields(logrus.Fields{
 						"hash": ar.Hash,
@@ -634,8 +634,8 @@ func (c *collector) BlobUsage() ([]Blob, error) {
 	return ret, nil
 }
 
-func (c *collector) inputDirs(ar *ppb.ActionResult) (*pb.Action, []*pb.Directory, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+func (c *collector) inputDirs(ctx context.Context, ar *ppb.ActionResult) (*pb.Action, []*pb.Directory, error) {
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 	action := &pb.Action{}
 	blob, present := c.allBlobs[ar.Hash]

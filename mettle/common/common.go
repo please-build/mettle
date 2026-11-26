@@ -40,7 +40,7 @@ const workerKey = "build.please.mettle.worker"
 // MustOpenSubscription opens a subscription, which must have been created ahead of time.
 // It dies on any errors. `batchSize` controls how many messages can receive at a time.
 // It can not be equal to zero; this function will panic if it is.
-func MustOpenSubscription(url string, batchSize uint) *pubsub.Subscription {
+func MustOpenSubscription(ctx context.Context, url string, batchSize uint) *pubsub.Subscription {
 	if batchSize == 0 {
 		log.Fatal("batch size for subscription can not be equal to zero")
 	}
@@ -51,13 +51,13 @@ func MustOpenSubscription(url string, batchSize uint) *pubsub.Subscription {
 		log.Debug("Re-opened existing subscription to %s", url)
 		return sub
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	s, err := pubsub.OpenSubscription(ctx, url)
 	if err != nil {
 		log.Fatalf("Failed to open subscription %s: %s", url, err)
 	}
 	log.Debug("Opened subscription to %s", url)
-	handleSignals(cancel, s)
+	handleSignals(ctx, cancel, s)
 	subscriptions[url] = s
 	return s
 }
@@ -77,8 +77,8 @@ func limitBatchSize(in, size string) string {
 }
 
 // MustOpenTopic opens a topic, which must have been created ahead of time.
-func MustOpenTopic(url string) *pubsub.Topic {
-	t, err := pubsub.OpenTopic(context.Background(), url)
+func MustOpenTopic(ctx context.Context, url string) *pubsub.Topic {
+	t, err := pubsub.OpenTopic(ctx, url)
 	if err != nil {
 		log.Fatalf("Failed to open topic %s: %s", url, err)
 	}
@@ -86,12 +86,14 @@ func MustOpenTopic(url string) *pubsub.Topic {
 	return t
 }
 
-func handleSignals(cancel context.CancelFunc, s Shutdownable) {
+func handleSignals(ctx context.Context, cancel context.CancelFunc, s Shutdownable) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGTERM)
 	go func() {
 		log.Warning("Received signal %s, shutting down queue", <-ch)
-		ctx, cnx := context.WithTimeout(context.Background(), 10*time.Second)
+		// context.WithoutCancel is defensive; it ensures the Shutdown function can still run even
+		// if the parent context has already been cancelled.
+		ctx, cnx := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cnx()
 		if err := s.Shutdown(ctx); err != nil {
 			log.Error("Failed to shut down queue: %s", err)

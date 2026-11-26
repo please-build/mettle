@@ -93,24 +93,24 @@ func TestExecuteAndWait(t *testing.T) {
 	defer s.Stop()
 
 	const hash = uncachedHash
-	stream1, err := client.Execute(context.Background(), &pb.ExecuteRequest{
+	stream1, err := client.Execute(t.Context(), &pb.ExecuteRequest{
 		ActionDigest: &pb.Digest{Hash: hash},
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_CACHE_CHECK)
 	op := receiveUpdate(t, stream1, hash, pb.ExecutionStage_QUEUED)
 
-	stream2, err := client.WaitExecution(context.Background(), &pb.WaitExecutionRequest{
+	stream2, err := client.WaitExecution(t.Context(), &pb.WaitExecutionRequest{
 		Name: op.Name,
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream2, hash, pb.ExecutionStage_QUEUED)
-	assert.Equal(t, hash, ex.Receive().Hash)
+	assert.Equal(t, hash, ex.Receive(t.Context()).Hash)
 
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_EXECUTING)
 	receiveUpdate(t, stream2, hash, pb.ExecutionStage_EXECUTING)
 
-	ex.Finish(&pb.Digest{Hash: hash})
+	ex.Finish(t.Context(), &pb.Digest{Hash: hash})
 	op1 := receiveUpdate(t, stream1, hash, pb.ExecutionStage_COMPLETED)
 	op2 := receiveUpdate(t, stream2, hash, pb.ExecutionStage_COMPLETED)
 	checkExitCode(t, op1, 0)
@@ -122,32 +122,32 @@ func TestExecuteAndWaitTwice(t *testing.T) {
 	defer s.Stop()
 
 	const hash = uncachedHash
-	stream1, err := client.Execute(context.Background(), &pb.ExecuteRequest{
+	stream1, err := client.Execute(t.Context(), &pb.ExecuteRequest{
 		ActionDigest: &pb.Digest{Hash: hash},
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_CACHE_CHECK)
 	op := receiveUpdate(t, stream1, hash, pb.ExecutionStage_QUEUED)
 
-	stream2, err := client.WaitExecution(context.Background(), &pb.WaitExecutionRequest{
+	stream2, err := client.WaitExecution(t.Context(), &pb.WaitExecutionRequest{
 		Name: op.Name,
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream2, hash, pb.ExecutionStage_QUEUED)
 
-	stream3, err := client.WaitExecution(context.Background(), &pb.WaitExecutionRequest{
+	stream3, err := client.WaitExecution(t.Context(), &pb.WaitExecutionRequest{
 		Name: op.Name,
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream3, hash, pb.ExecutionStage_QUEUED)
 
-	assert.Equal(t, hash, ex.Receive().Hash)
+	assert.Equal(t, hash, ex.Receive(t.Context()).Hash)
 
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_EXECUTING)
 	receiveUpdate(t, stream2, hash, pb.ExecutionStage_EXECUTING)
 	receiveUpdate(t, stream3, hash, pb.ExecutionStage_EXECUTING)
 
-	ex.Finish(&pb.Digest{Hash: hash})
+	ex.Finish(t.Context(), &pb.Digest{Hash: hash})
 	op1 := receiveUpdate(t, stream1, hash, pb.ExecutionStage_COMPLETED)
 	op2 := receiveUpdate(t, stream2, hash, pb.ExecutionStage_COMPLETED)
 	op3 := receiveUpdate(t, stream3, hash, pb.ExecutionStage_COMPLETED)
@@ -161,23 +161,23 @@ func TestExecuteAndWaitLater(t *testing.T) {
 	defer s.Stop()
 
 	const hash = uncachedHash
-	stream1, err := client.Execute(context.Background(), &pb.ExecuteRequest{
+	stream1, err := client.Execute(t.Context(), &pb.ExecuteRequest{
 		ActionDigest: &pb.Digest{Hash: hash},
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_CACHE_CHECK)
 	op := receiveUpdate(t, stream1, hash, pb.ExecutionStage_QUEUED)
 
-	assert.Equal(t, hash, ex.Receive().Hash)
+	assert.Equal(t, hash, ex.Receive(t.Context()).Hash)
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_EXECUTING)
 
-	stream2, err := client.WaitExecution(context.Background(), &pb.WaitExecutionRequest{
+	stream2, err := client.WaitExecution(t.Context(), &pb.WaitExecutionRequest{
 		Name: op.Name,
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream2, hash, pb.ExecutionStage_EXECUTING)
 
-	ex.Finish(&pb.Digest{Hash: hash})
+	ex.Finish(t.Context(), &pb.Digest{Hash: hash})
 	op1 := receiveUpdate(t, stream1, hash, pb.ExecutionStage_COMPLETED)
 	op2 := receiveUpdate(t, stream2, hash, pb.ExecutionStage_COMPLETED)
 	checkExitCode(t, op1, 0)
@@ -189,19 +189,19 @@ func TestExecuteAndWaitAfterCompletion(t *testing.T) {
 	defer s.Stop()
 
 	const hash = uncachedHash
-	stream1, err := client.Execute(context.Background(), &pb.ExecuteRequest{
+	stream1, err := client.Execute(t.Context(), &pb.ExecuteRequest{
 		ActionDigest: &pb.Digest{Hash: hash},
 	})
 	assert.NoError(t, err)
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_CACHE_CHECK)
 	op := receiveUpdate(t, stream1, hash, pb.ExecutionStage_QUEUED)
-	assert.Equal(t, hash, ex.Receive().Hash)
+	assert.Equal(t, hash, ex.Receive(t.Context()).Hash)
 	receiveUpdate(t, stream1, hash, pb.ExecutionStage_EXECUTING)
-	ex.Finish(&pb.Digest{Hash: hash})
+	ex.Finish(t.Context(), &pb.Digest{Hash: hash})
 	op1 := receiveUpdate(t, stream1, hash, pb.ExecutionStage_COMPLETED)
 	checkExitCode(t, op1, 0)
 
-	stream2, err := client.WaitExecution(context.Background(), &pb.WaitExecutionRequest{
+	stream2, err := client.WaitExecution(t.Context(), &pb.WaitExecutionRequest{
 		Name: op.Name,
 	})
 	assert.NoError(t, err)
@@ -285,16 +285,16 @@ func TestShouldDeleteJob(t *testing.T) {
 }
 
 func runExecution(t *testing.T, client pb.ExecutionClient, ex *executor, hash string, expectedExitCode int) {
-	stream, err := client.Execute(context.Background(), &pb.ExecuteRequest{
+	stream, err := client.Execute(t.Context(), &pb.ExecuteRequest{
 		ActionDigest: &pb.Digest{Hash: hash},
 	})
 	assert.NoError(t, err)
 
 	receiveUpdate(t, stream, hash, pb.ExecutionStage_CACHE_CHECK)
 	receiveUpdate(t, stream, hash, pb.ExecutionStage_QUEUED)
-	assert.Equal(t, hash, ex.Receive().Hash)
+	assert.Equal(t, hash, ex.Receive(t.Context()).Hash)
 	receiveUpdate(t, stream, hash, pb.ExecutionStage_EXECUTING)
-	ex.Finish(&pb.Digest{Hash: hash})
+	ex.Finish(t.Context(), &pb.Digest{Hash: hash})
 	op := receiveUpdate(t, stream, hash, pb.ExecutionStage_COMPLETED)
 	checkExitCode(t, op, expectedExitCode)
 }
@@ -334,9 +334,9 @@ func setupServers(t *testing.T) (pb.ExecutionClient, *executor, *grpc.Server) {
 		SubscriptionBatchSize: 1,
 	}
 	queueID++
-	common.MustOpenTopic(requests)  // Ensure these are created before anything tries
-	common.MustOpenTopic(responses) // to open a subscription to either.
-	s, lis, err := serve(Opts{
+	common.MustOpenTopic(t.Context(), requests)  // Ensure these are created before anything tries
+	common.MustOpenTopic(t.Context(), responses) // to open a subscription to either.
+	s, lis, err := serve(t.Context(), Opts{
 		GRPC: grpcutil.Opts{
 			Host: "127.0.0.1",
 			Port: 0,
@@ -350,7 +350,7 @@ func setupServers(t *testing.T) (pb.ExecutionClient, *executor, *grpc.Server) {
 	go s.Serve(lis)
 	conn, err := grpc.Dial(lis.Addr().String(), grpc.WithInsecure())
 	require.NoError(t, err)
-	return pb.NewExecutionClient(conn), newExecutor(requests, responses), s
+	return pb.NewExecutionClient(conn), newExecutor(t.Context(), requests, responses), s
 }
 
 func setupCASServer() string {
@@ -380,7 +380,7 @@ func TestGetExecutions(t *testing.T) {
 	bpb.RegisterBootstrapServer(s, srv)
 	go s.Serve(lis)
 
-	jobs, err := getExecutions(opts, lis.Addr().String(), false)
+	jobs, err := getExecutions(t.Context(), opts, lis.Addr().String(), false)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(jobs))
 	assert.Equal(t, "Unfinished Operation", jobs["1234"].Current.Name)
@@ -430,11 +430,11 @@ func setupRoutingServer(t *testing.T, allowedPlatform map[string][]string) *rout
 		NumPollers:            1,
 		SubscriptionBatchSize: 1,
 	}
-	common.MustOpenTopic(stdQueue)
-	common.MustOpenTopic(heavyQueue)
-	common.MustOpenTopic(responses)
+	common.MustOpenTopic(t.Context(), stdQueue)
+	common.MustOpenTopic(t.Context(), heavyQueue)
+	common.MustOpenTopic(t.Context(), responses)
 
-	s, lis, err := serve(Opts{
+	s, lis, err := serve(t.Context(), Opts{
 		GRPC: grpcutil.Opts{
 			Host: "127.0.0.1",
 			Port: 0,
@@ -452,14 +452,14 @@ func setupRoutingServer(t *testing.T, allowedPlatform map[string][]string) *rout
 	require.NoError(t, err)
 	return &routingFixture{
 		client: pb.NewExecutionClient(conn),
-		std:    newExecutor(stdQueue, responses),
-		heavy:  newExecutor(heavyQueue, responses),
+		std:    newExecutor(t.Context(), stdQueue, responses),
+		heavy:  newExecutor(t.Context(), heavyQueue, responses),
 	}
 }
 
 // execute sends an ExecuteRequest for the given action digest and waits for it to be queued.
 func (f *routingFixture) execute(t *testing.T, d *pb.Digest) {
-	stream, err := f.client.Execute(context.Background(), &pb.ExecuteRequest{ActionDigest: d})
+	stream, err := f.client.Execute(t.Context(), &pb.ExecuteRequest{ActionDigest: d})
 	require.NoError(t, err)
 	receiveUpdate(t, stream, d.Hash, pb.ExecutionStage_CACHE_CHECK)
 	receiveUpdate(t, stream, d.Hash, pb.ExecutionStage_QUEUED)
@@ -469,7 +469,7 @@ func (f *routingFixture) execute(t *testing.T, d *pb.Digest) {
 // if nothing arrives (as opposed to blocking forever when a request is misrouted).
 func receiveWithin(t *testing.T, ex *executor, queue string) *pb.Digest {
 	ch := make(chan *pb.Digest, 1)
-	go func() { ch <- ex.Receive() }()
+	go func() { ch <- ex.Receive(t.Context()) }()
 	select {
 	case d := <-ch:
 		return d
@@ -518,7 +518,7 @@ func TestExecuteRoutingWithPlatformValidation(t *testing.T) {
 		"invalid other property":   registerAction(t, &pb.Platform_Property{Name: "OSFamily", Value: "windows"}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			stream, err := f.client.Execute(context.Background(), &pb.ExecuteRequest{ActionDigest: d})
+			stream, err := f.client.Execute(t.Context(), &pb.ExecuteRequest{ActionDigest: d})
 			require.NoError(t, err)
 			_, err = stream.Recv()
 			assert.Equal(t, codes.InvalidArgument, status.Code(err))
@@ -530,7 +530,7 @@ func TestExecuteFailsIfActionCannotBeRead(t *testing.T) {
 	f := setupRoutingServer(t, map[string][]string{})
 	d := &pb.Digest{Hash: strings.Repeat("ab", 32), SizeBytes: 10}
 
-	stream, err := f.client.Execute(context.Background(), &pb.ExecuteRequest{ActionDigest: d})
+	stream, err := f.client.Execute(t.Context(), &pb.ExecuteRequest{ActionDigest: d})
 	require.NoError(t, err)
 	_, err = stream.Recv()
 	require.Error(t, err)
@@ -650,16 +650,16 @@ type executor struct {
 	responses *pubsub.Topic
 }
 
-func newExecutor(requests, responses string) *executor {
+func newExecutor(ctx context.Context, requests, responses string) *executor {
 	return &executor{
-		requests:  common.MustOpenSubscription(requests, 1),
-		responses: common.MustOpenTopic(responses),
+		requests:  common.MustOpenSubscription(ctx, requests, 1),
+		responses: common.MustOpenTopic(ctx, responses),
 	}
 }
 
 // Receive receives the next request from the queue and begins "execution" of it.
-func (ex *executor) Receive() *pb.Digest {
-	msg, _ := ex.requests.Receive(context.Background())
+func (ex *executor) Receive(ctx context.Context) *pb.Digest {
+	msg, _ := ex.requests.Receive(ctx)
 	req := &pb.ExecuteRequest{}
 	if err := proto.Unmarshal(msg.Body, req); err != nil {
 		log.Fatalf("Failed to deserialise message: %s", err)
@@ -672,13 +672,13 @@ func (ex *executor) Receive() *pb.Digest {
 		Name:     req.ActionDigest.Hash,
 		Metadata: metadata,
 	})
-	ex.responses.Send(context.Background(), &pubsub.Message{Body: b})
+	ex.responses.Send(ctx, &pubsub.Message{Body: b})
 	msg.Ack()
 	return req.ActionDigest
 }
 
 // Finish "completes" execution and sends a response.
-func (ex *executor) Finish(digest *pb.Digest) {
+func (ex *executor) Finish(ctx context.Context, digest *pb.Digest) {
 	metadata, _ := ptypes.MarshalAny(&pb.ExecuteOperationMetadata{
 		Stage:        pb.ExecutionStage_COMPLETED,
 		ActionDigest: digest,
@@ -695,7 +695,7 @@ func (ex *executor) Finish(digest *pb.Digest) {
 			Done:     true,
 			Result:   &longrunning.Operation_Response{Response: response},
 		})
-		ex.responses.Send(context.Background(), &pubsub.Message{Body: b})
+		ex.responses.Send(ctx, &pubsub.Message{Body: b})
 	} else {
 		response, _ := ptypes.MarshalAny(&pb.ExecuteResponse{
 			Result: &pb.ActionResult{},
@@ -706,7 +706,7 @@ func (ex *executor) Finish(digest *pb.Digest) {
 			Done:     true,
 			Result:   &longrunning.Operation_Response{Response: response},
 		})
-		ex.responses.Send(context.Background(), &pubsub.Message{Body: b})
+		ex.responses.Send(ctx, &pubsub.Message{Body: b})
 	}
 }
 
@@ -781,6 +781,7 @@ func TestMain(m *testing.M) {
 // fakeStream is a minimal implementation of an Execute stream that records what is sent on it.
 type fakeStream struct {
 	pb.Execution_ExecuteServer
+	ctx context.Context
 	ops []*longrunning.Operation
 }
 
@@ -790,7 +791,7 @@ func (f *fakeStream) Send(op *longrunning.Operation) error {
 }
 
 func (f *fakeStream) Context() context.Context {
-	return context.Background()
+	return f.ctx
 }
 
 func newTestServer() *server {
@@ -915,7 +916,7 @@ func (t *recordingTopic) Close() error                           { return nil }
 // newRecordingServer returns a server whose request & pre-response topics record to the returned log.
 // The given function is called before each request is sent.
 func newRecordingServer(t *testing.T, onRequest func() error) (*server, *sentLog) {
-	client, err := rexclient.New("test", setupCASServer(), false, "")
+	client, err := rexclient.New(t.Context(), "test", setupCASServer(), false, "")
 	require.NoError(t, err)
 	l := &sentLog{}
 	s := newTestServer()
@@ -926,9 +927,9 @@ func newRecordingServer(t *testing.T, onRequest func() error) (*server, *sentLog
 }
 
 // goExecute runs Execute in the background and returns a channel that receives its result.
-func goExecute(s *server, req *pb.ExecuteRequest) <-chan error {
+func goExecute(t *testing.T, s *server, req *pb.ExecuteRequest) <-chan error {
 	ch := make(chan error, 1)
-	go func() { ch <- s.Execute(req, &fakeStream{}) }()
+	go func() { ch <- s.Execute(req, &fakeStream{ctx: t.Context()}) }()
 	return ch
 }
 
@@ -966,7 +967,7 @@ func TestAbandonedJobEndsStreams(t *testing.T) {
 
 	// The client waiting on it should get an error so it retries, rather than waiting forever.
 	result := make(chan error, 1)
-	go func() { result <- s.streamEvents(d, ch, &fakeStream{}) }()
+	go func() { result <- s.streamEvents(d, ch, &fakeStream{ctx: t.Context()}) }()
 	assert.Equal(t, codes.Unavailable, status.Code(waitForResult(t, result)))
 }
 
@@ -982,7 +983,7 @@ func TestFailedSubmissionDoesNotLeaveJobBehind(t *testing.T) {
 	d := registerAction(t)
 	req := &pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}
 
-	err := s.Execute(req, &fakeStream{})
+	err := s.Execute(req, &fakeStream{ctx: t.Context()})
 	assert.Equal(t, codes.Unavailable, status.Code(err))
 	assert.NotContains(t, s.jobs, d.Hash)
 	// Nobody else should be told it's queued.
@@ -990,7 +991,7 @@ func TestFailedSubmissionDoesNotLeaveJobBehind(t *testing.T) {
 
 	// When the client retries, the request should be submitted again rather than resuming a job that was never queued.
 	fail.Store(false)
-	goExecute(s, req)
+	goExecute(t, s, req)
 	assert.Eventually(t, func() bool { return len(l.Sent()) == 2 }, 5*time.Second, 10*time.Millisecond)
 	assert.Equal(t, []string{"request", "pre-response"}, l.Sent())
 }
@@ -1005,10 +1006,10 @@ func TestResumingClientIsEndedWhenSubmissionFails(t *testing.T) {
 	req := &pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}
 
 	// The first client creates the job and blocks submitting it.
-	first := goExecute(s, req)
+	first := goExecute(t, s, req)
 	require.Eventually(t, func() bool { return s.numStreams(d.Hash) == 1 }, 5*time.Second, 10*time.Millisecond)
 	// A second client arrives and resumes the job while that's ongoing.
-	second := goExecute(s, req)
+	second := goExecute(t, s, req)
 	require.Eventually(t, func() bool { return s.numStreams(d.Hash) == 2 }, 5*time.Second, 10*time.Millisecond)
 
 	close(release)
@@ -1042,9 +1043,9 @@ func TestConcurrentExecutionsAndCleanup(t *testing.T) {
 				d := digests[(i+j)%len(digests)]
 				var err error
 				if j%3 == 2 {
-					err = s.WaitExecution(&pb.WaitExecutionRequest{Name: d.Hash}, &fakeStream{})
+					err = s.WaitExecution(&pb.WaitExecutionRequest{Name: d.Hash}, &fakeStream{ctx: t.Context()})
 				} else {
-					err = s.Execute(&pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}, &fakeStream{})
+					err = s.Execute(&pb.ExecuteRequest{ActionDigest: d, SkipCacheLookup: true}, &fakeStream{ctx: t.Context()})
 				}
 				if code := status.Code(err); code != codes.OK && code != codes.Unavailable && code != codes.NotFound {
 					t.Errorf("Unexpected error from client: %s", err)
