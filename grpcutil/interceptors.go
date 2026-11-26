@@ -48,8 +48,8 @@ type Opts struct {
 
 // NewServer creates a new gRPC server with a standard set of interceptors.
 // It opens the relevant port and returns a listener for it, but does not begin serving.
-func NewServer(opts Opts) (net.Listener, *grpc.Server) {
-	auth := loadAuth(context.Background(), opts)
+func NewServer(ctx context.Context, opts Opts) (net.Listener, *grpc.Server) {
+	auth := loadAuth(ctx, opts)
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", opts.Host, opts.Port))
 	if err != nil {
 		log.Fatalf("Failed to listen on %s:%d: %v", opts.Host, opts.Port, err)

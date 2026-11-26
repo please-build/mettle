@@ -120,11 +120,11 @@ func withToken(token string) context.Context {
 }
 
 func TestLoadAuthNoFlags(t *testing.T) {
-	a := loadAuth(context.Background(), Opts{})
+	a := loadAuth(t.Context(), Opts{})
 	for _, ctx := range []context.Context{
-		context.Background(),
+		t.Context(),
 		withToken("s3cr3t"),
-		metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "garbage")),
+		metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "garbage")),
 	} {
 		for _, method := range allMethods() {
 			assert.NoError(t, a.AuthRPC(ctx, method), method)
@@ -134,12 +134,12 @@ func TestLoadAuthNoFlags(t *testing.T) {
 }
 
 func TestLoadAuthTokenFile(t *testing.T) {
-	a := loadAuth(context.Background(), Opts{TokenFile: writeToken(t)})
+	a := loadAuth(t.Context(), Opts{TokenFile: writeToken(t)})
 	for _, method := range anonymousMethods {
-		assert.NoError(t, a.AuthRPC(context.Background(), method), method)
+		assert.NoError(t, a.AuthRPC(t.Context(), method), method)
 	}
 	for _, method := range mutatingMethods {
-		assert.Error(t, a.AuthRPC(context.Background(), method), method)
+		assert.Error(t, a.AuthRPC(t.Context(), method), method)
 		assert.Error(t, a.AuthRPC(withToken("wrong"), method), method)
 	}
 	for _, method := range allMethods() {
@@ -148,9 +148,9 @@ func TestLoadAuthTokenFile(t *testing.T) {
 }
 
 func TestLoadAuthAuthAll(t *testing.T) {
-	a := loadAuth(context.Background(), Opts{TokenFile: writeToken(t), AuthAll: true})
+	a := loadAuth(t.Context(), Opts{TokenFile: writeToken(t), AuthAll: true})
 	for _, method := range allMethods() {
-		assert.Error(t, a.AuthRPC(context.Background(), method), method)
+		assert.Error(t, a.AuthRPC(t.Context(), method), method)
 		assert.Error(t, a.AuthRPC(withToken("wrong"), method), method)
 		assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), method), method)
 	}
@@ -175,17 +175,17 @@ roles:
 static:
   file: `+writeToken(t)), 0644))
 	// --auth_config takes precedence over the legacy flags.
-	a := loadAuth(context.Background(), Opts{AuthConfig: cfg, TokenFile: "/nonexistent", AuthAll: true})
-	assert.NoError(t, a.AuthRPC(context.Background(), bsRead))
-	assert.Error(t, a.AuthRPC(context.Background(), bsWrite))
-	assert.Error(t, a.AuthRPC(context.Background(), getActionResult))
+	a := loadAuth(t.Context(), Opts{AuthConfig: cfg, TokenFile: "/nonexistent", AuthAll: true})
+	assert.NoError(t, a.AuthRPC(t.Context(), bsRead))
+	assert.Error(t, a.AuthRPC(t.Context(), bsWrite))
+	assert.Error(t, a.AuthRPC(t.Context(), getActionResult))
 	assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), bsWrite))
 	assert.Error(t, a.AuthRPC(withToken("s3cr3t"), execute))
 }
 
 func TestAllRegisteredMethodsHavePermissions(t *testing.T) {
 	// With a token configured, unregistered methods are rejected, so this catches anything missing from the map.
-	a := loadAuth(context.Background(), Opts{TokenFile: writeToken(t), AuthAll: true})
+	a := loadAuth(t.Context(), Opts{TokenFile: writeToken(t), AuthAll: true})
 	for _, method := range allMethods() {
 		err := a.AuthRPC(withToken("s3cr3t"), method)
 		assert.NoError(t, err, method)

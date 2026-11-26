@@ -55,7 +55,7 @@ func ServeForever(ctx context.Context, opts grpcutil.Opts, casReplicator, assetR
 		exeReplicator:   executorReplicator,
 	}
 	opts.NoHealth = true // We will do this ourselves.
-	lis, s := grpcutil.NewServer(opts)
+	lis, s := grpcutil.NewServer(ctx, opts)
 	pb.RegisterCapabilitiesServer(s, srv)
 	pb.RegisterActionCacheServer(s, srv)
 	pb.RegisterContentAddressableStorageServer(s, srv)

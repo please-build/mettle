@@ -289,7 +289,7 @@ func serve(ctx context.Context, opts Opts) (*grpc.Server, net.Listener, error) {
 	go srv.Receive(ctx)
 	go srv.periodicallyDeleteJobs()
 
-	lis, s := grpcutil.NewServer(opts.GRPC)
+	lis, s := grpcutil.NewServer(ctx, opts.GRPC)
 	pb.RegisterCapabilitiesServer(s, srv)
 	pb.RegisterExecutionServer(s, srv)
 	bpb.RegisterBootstrapServer(s, srv)

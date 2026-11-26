@@ -53,7 +53,7 @@ var busyWorkers = prometheus.NewGauge(prometheus.GaugeOpts{
 func ServeForever(ctx context.Context, opts grpcutil.Opts, httpPort int, maxAge time.Duration, minProportion float64, audience string, allowedUsers []string) {
 	srv := newServer(minProportion)
 	prometheus.MustRegister(srv)
-	lis, s := grpcutil.NewServer(opts)
+	lis, s := grpcutil.NewServer(ctx, opts)
 	pb.RegisterLucidityServer(s, srv)
 
 	mux := http.NewServeMux()

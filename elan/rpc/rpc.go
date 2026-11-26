@@ -184,7 +184,7 @@ func createServer(ctx context.Context, storage string, parallelism int, maxDirCa
 
 func startServer(ctx context.Context, opts grpcutil.Opts, storage string, parallelism int, maxDirCacheSize, maxKnownBlobCacheSize int64, readRedis *redis.Client, largeBlobSize int64) (net.Listener, *grpc.Server) {
 	srv := createServer(ctx, storage, parallelism, maxDirCacheSize, maxKnownBlobCacheSize, readRedis, largeBlobSize)
-	lis, s := grpcutil.NewServer(opts)
+	lis, s := grpcutil.NewServer(ctx, opts)
 	pb.RegisterCapabilitiesServer(s, srv)
 	pb.RegisterActionCacheServer(s, srv)
 	pb.RegisterContentAddressableStorageServer(s, srv)
