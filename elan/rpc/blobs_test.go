@@ -82,9 +82,9 @@ func (c blobCounts) place(t *testing.T, s *server, mr *miniredis.Miniredis) []*p
 				require.NoError(t, mr.Set(d.Hash, string(data)))
 			}
 			if g.inBucket && g.compressed {
-				require.NoError(t, s.bucket.WriteAll(t.Context(), s.key("zstd_cas", d), s.compressor.EncodeAll(data, nil)))
+				require.NoError(t, s.bucket.WriteAll(t.Context(), s.key("zstd_cas", d), s.compressor.EncodeAll(data, nil), nil))
 			} else if g.inBucket {
-				require.NoError(t, s.bucket.WriteAll(t.Context(), s.key("cas", d), data))
+				require.NoError(t, s.bucket.WriteAll(t.Context(), s.key("cas", d), data, nil))
 			}
 			digests = append(digests, d)
 		}

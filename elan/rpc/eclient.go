@@ -31,7 +31,7 @@ func (e *elanClient) ReadBlob(ctx context.Context, dg *pb.Digest) ([]byte, error
 	defer cancel()
 	blob, err := e.s.readAllBlob(ctx, "cas", dg)
 	if err != nil {
-		return blob, fmt.Errorf("Error reading blob: %w", err)
+		return blob, fmt.Errorf("error reading blob: %w", err)
 	}
 	return blob, nil
 }
@@ -49,11 +49,11 @@ func (e *elanClient) WriteBlob(ctx context.Context, b []byte) (*pb.Digest, error
 	key := e.s.compressedKey("cas", dg, compressed)
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
-	if e.s.blobExists(ctx, CASPrefix, dg, compressed, false) {
+	if e.s.blobKnownToExist(ctx, CASPrefix, dg, compressed, false) {
 		return dg, nil
 	}
-	if err := e.s.handleRateLimitedWrite(ctx, key, e.s.bucket.WriteAll(ctx, key, b)); err != nil {
-		return dg, fmt.Errorf("Error writing blob: %w", err)
+	if err := e.s.handleCASWriteError(ctx, key, e.s.bucket.WriteAll(ctx, key, b, &blob.WriterOptions{IfNotExist: true})); err != nil {
+		return dg, fmt.Errorf("error writing blob: %w", err)
 	}
 	return dg, nil
 }
@@ -104,7 +104,7 @@ func (e *elanClient) uploadOne(ctx context.Context, entry *uploadinfo.Entry, com
 		if compressed {
 			entry.Contents = e.s.compressor.EncodeAll(entry.Contents, make([]byte, 0, entry.Digest.Size))
 		}
-		return e.s.handleRateLimitedWrite(ctx, key, e.s.bucket.WriteAll(ctx, key, entry.Contents))
+		return e.s.handleCASWriteError(ctx, key, e.s.bucket.WriteAll(ctx, key, entry.Contents, &blob.WriterOptions{IfNotExist: true}))
 	}
 	// OK it's in a file, stream it across.
 	f, err := os.Open(entry.Path)
@@ -116,14 +116,17 @@ func (e *elanClient) uploadOne(ctx context.Context, entry *uploadinfo.Entry, com
 			err = closeErr
 		}
 	}()
-	wr, err := e.s.bucket.NewWriter(ctx, key, &blob.WriterOptions{BufferSize: e.s.bufferSize(entry.Digest.ToProto())})
+	wr, err := e.s.bucket.NewWriter(ctx, key, &blob.WriterOptions{
+		BufferSize: e.s.bufferSize(entry.Digest.ToProto()),
+		IfNotExist: true,
+	})
 	if err != nil {
 		return err
 	}
 
 	defer func() {
 		if closeErr := wr.Close(); err == nil {
-			err = e.s.handleRateLimitedWrite(ctx, key, closeErr)
+			err = e.s.handleCASWriteError(ctx, key, closeErr)
 		}
 	}()
 

@@ -3,7 +3,6 @@ package rpc
 import (
 	"context"
 	"io"
-	"io/ioutil"
 
 	"cloud.google.com/go/storage"
 	"github.com/klauspost/compress/zstd"
@@ -17,7 +16,7 @@ import (
 type bucket interface {
 	NewRangeReader(ctx context.Context, key string, offset, length int64, opts *blob.ReaderOptions) (io.ReadCloser, error)
 	NewWriter(ctx context.Context, key string, opts *blob.WriterOptions) (io.WriteCloser, error)
-	WriteAll(ctx context.Context, key string, data []byte) error
+	WriteAll(ctx context.Context, key string, data []byte, opts *blob.WriterOptions) error
 	ReadAll(ctx context.Context, key string) ([]byte, error)
 	Exists(ctx context.Context, key string) (bool, error)
 	List(opts *blob.ListOptions) *blob.ListIterator
@@ -50,12 +49,17 @@ func (a *adapter) NewWriter(ctx context.Context, key string, opts *blob.WriterOp
 	return a.bucket.NewWriter(ctx, key, opts)
 }
 
-func (a *adapter) WriteAll(ctx context.Context, key string, data []byte) error {
-	// Without a BufferSize the GCS writer allocates a full upload chunk (16 MiB) per call, however small the data is.
-	// The buffer must be larger than the data: if the data exactly fills it the client cannot see EOF and falls
-	// back to a slower multi-request resumable upload.
-	size := min(len(data)+1, googleapi.DefaultUploadChunkSize)
-	return a.bucket.WriteAll(ctx, key, data, &blob.WriterOptions{BufferSize: size})
+func (a *adapter) WriteAll(ctx context.Context, key string, data []byte, opts *blob.WriterOptions) error {
+	if opts == nil {
+		opts = &blob.WriterOptions{}
+	}
+	if opts.BufferSize == 0 {
+		// Without a BufferSize the GCS writer allocates a full upload chunk (16 MiB) per call, however small the data is.
+		// The buffer must be larger than the data: if the data exactly fills it the client cannot see EOF and falls
+		// back to a slower multi-request resumable upload.
+		opts.BufferSize = min(len(data)+1, googleapi.DefaultUploadChunkSize)
+	}
+	return a.bucket.WriteAll(ctx, key, data, opts)
 }
 
 func (a *adapter) ReadAll(ctx context.Context, key string) ([]byte, error) {
@@ -84,7 +88,7 @@ func (s *server) compressedReader(r io.ReadCloser, needCompression, isCompressed
 	} else if isCompressed && offset != 0 {
 		// Offsets refer into the uncompressed blob, we have to handle that ourselves.
 		r = s.decompressReader(r)
-		_, err := io.CopyN(ioutil.Discard, r, offset)
+		_, err := io.CopyN(io.Discard, r, offset)
 		return r, false, err
 	} else if isCompressed {
 		return s.decompressReader(r), false, nil

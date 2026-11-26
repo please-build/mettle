@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path"
@@ -305,7 +304,7 @@ func (s *server) UpdateActionResult(ctx context.Context, req *pb.UpdateActionRes
 	if err != nil {
 		return req.ActionResult, err
 	}
-	return req.ActionResult, s.bucket.WriteAll(ctx, s.key("ac", req.ActionDigest), b)
+	return req.ActionResult, s.bucket.WriteAll(ctx, s.key("ac", req.ActionDigest), b, nil)
 }
 
 func (s *server) FindMissingBlobs(ctx context.Context, req *pb.FindMissingBlobsRequest) (*pb.FindMissingBlobsResponse, error) {
@@ -409,7 +408,23 @@ func (s *server) notInRedis(ctx context.Context, digests []*pb.Digest) []*pb.Dig
 }
 
 // blobExists returns true if this blob exists in the underlying storage.
-func (s *server) blobExists(ctx context.Context, prefix string, digest *pb.Digest, compressed, redisRequest bool) (exists bool) {
+func (s *server) blobExists(ctx context.Context, prefix string, digest *pb.Digest, compressed, redisRequest bool) bool {
+	if s.blobKnownToExist(ctx, prefix, digest, compressed, redisRequest) {
+		return true
+	}
+	// N.B. if the blob is not known in the cache we still have to check, since something
+	//      else could have written it when we weren't looking.
+	key := s.compressedKey(prefix, digest, compressed)
+	if !s.blobExistsUncached(ctx, key) {
+		return false
+	}
+	s.markKnownBlob(key)
+	return true
+}
+
+// blobKnownToExist returns true if the known blob cache or Redis say this blob exists.
+// It never consults the underlying GCS storage.
+func (s *server) blobKnownToExist(ctx context.Context, prefix string, digest *pb.Digest, compressed, redisRequest bool) (exists bool) {
 	key := s.compressedKey(prefix, digest, compressed)
 	if s.knownBlobCache != nil {
 		if _, present := s.knownBlobCache.Get(key); present {
@@ -432,10 +447,7 @@ func (s *server) blobExists(ctx context.Context, prefix string, digest *pb.Diges
 			return true
 		}
 	}
-
-	// N.B. if the blob is not known in the cache we still have to check, since something
-	//      else could have written it when we weren't looking.
-	return s.blobExistsUncached(ctx, key)
+	return false
 }
 
 func (s *server) blobExistsUncached(ctx context.Context, key string) bool {
@@ -853,11 +865,11 @@ func (s *server) compressedKey(prefix string, digest *pb.Digest, compressed bool
 
 func (s *server) writeBlob(ctx context.Context, prefix string, digest *pb.Digest, r io.Reader, compressed bool) error {
 	key := s.compressedKey(prefix, digest, compressed)
-	if s.isEmpty(digest) || s.blobExists(ctx, prefix, digest, compressed, true) {
+	if s.isEmpty(digest) || s.blobKnownToExist(ctx, prefix, digest, compressed, true) {
 		// Read and discard entire content; there is no need to update.
 		// There seems to be no way for the server to signal the caller to abort in this way, so
 		// this seems like the most compatible way.
-		_, err := io.Copy(ioutil.Discard, r)
+		_, err := io.Copy(io.Discard, r)
 		return err
 	}
 	if digest.SizeBytes > s.largeBlobSize {
@@ -870,13 +882,16 @@ func (s *server) writeBlob(ctx context.Context, prefix string, digest *pb.Digest
 	}()
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	w, err := s.bucket.NewWriter(wctx, key, &blob.WriterOptions{BufferSize: s.bufferSize(digest)})
+	w, err := s.bucket.NewWriter(wctx, key, &blob.WriterOptions{
+		BufferSize: s.bufferSize(digest),
+		IfNotExist: true,
+	})
 	if err != nil {
 		return err
 	}
 	defer w.Close()
-	tr := io.TeeReader(r, w)
-	r = tr
+	src := r
+	r = io.TeeReader(r, w)
 	h := sha256.New()
 	if compressed {
 		zr, err := zstd.NewReader(r)
@@ -888,6 +903,13 @@ func (s *server) writeBlob(ctx context.Context, prefix string, digest *pb.Digest
 	}
 	if _, err := io.Copy(h, r); err != nil {
 		cancel() // ensure this happens before w.Close()
+		if isFailedPrecondition(err) {
+			// Failed precondition on the conditional write implies someone else wrote the blob; discard
+			// the rest of the content.
+			s.markKnownBlob(key)
+			_, err := io.Copy(io.Discard, src)
+			return err
+		}
 		return err
 	} else if actual := hex.EncodeToString(h.Sum(nil)); actual != digest.Hash {
 		cancel()
@@ -896,7 +918,7 @@ func (s *server) writeBlob(ctx context.Context, prefix string, digest *pb.Digest
 	if err := w.Close(); err != nil {
 		cancel()
 		// N.B. this uses the original context since we've just cancelled the writer's one.
-		return s.handleRateLimitedWrite(ctx, key, err)
+		return s.handleCASWriteError(ctx, key, err)
 	}
 	s.markKnownBlob(key)
 	return nil
@@ -920,7 +942,7 @@ func (s *server) writeAll(ctx context.Context, digest *pb.Digest, data []byte, c
 		return fmt.Errorf("Rejecting write of %s; actual received digest was %s", digest.Hash, actual)
 	}
 	key := s.compressedKey("cas", digest, compressed)
-	return s.handleRateLimitedWrite(ctx, key, s.bucket.WriteAll(ctx, key, data))
+	return s.handleCASWriteError(ctx, key, s.bucket.WriteAll(ctx, key, data, &blob.WriterOptions{IfNotExist: true}))
 }
 
 // bytestreamBlobName returns the digest corresponding to a bytestream resource name
