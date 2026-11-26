@@ -27,7 +27,7 @@ go_library(
 )
 
 go_test(
-    name = "interceptors_test",
+    name = "grpcutil_test",
     srcs = glob(["*_test.go"]),
     deps = [
         ":grpcutil",

@@ -88,12 +88,7 @@ var authenticatedMethods = map[string]string{
 type Config struct {
 	// Definitions of roles (map of role name -> details)
 	// Note that 'anonymous' is the principal name that unauthorised users are given.
-	Roles map[string]struct {
-		// The permissions this role gets
-		Permissions []string `yaml:"permissions"`
-		// The names of incoming principals that get this role
-		Principals []string `yaml:"principals"`
-	} `yaml:"roles"`
+	Roles map[string]Role `yaml:"roles"`
 
 	// Details of Google tokens (via Workload Identity or whatever)
 	Google struct {
@@ -110,17 +105,27 @@ type Config struct {
 	} `yaml:"static"`
 }
 
+// A Role grants a set of permissions to a set of principals.
+type Role struct {
+	// The permissions this role gets
+	Permissions []string `yaml:"permissions"`
+	// The names of incoming principals that get this role
+	Principals []string `yaml:"principals"`
+}
+
 // LoadConfig loads config from the given file
 func LoadConfig(filename string) (*Config, error) {
 	b, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 	cfg := &Config{}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(cfg); err != nil && err != io.EOF {
-		return nil, fmt.Errorf("failed to parse config: %w", err)
+		return nil, fmt.Errorf("parse config: %w", err)
+	} else if len(cfg.Roles) == 0 {
+		return nil, fmt.Errorf("no roles defined in config")
 	}
 	return cfg, nil
 }
@@ -137,6 +142,8 @@ func MustLoadConfig(filename string) *Config {
 // An Authenticator auths incoming RPCs.
 type Authenticator struct {
 	config *Config
+	// Map of RPC method name -> permission required to call it
+	methods map[string]string
 	// Map of principal -> permissions it holds
 	principals map[string][]string
 	// The legacy static token
@@ -149,12 +156,13 @@ type Authenticator struct {
 func NewAuthenticator(ctx context.Context, cfg *Config) (*Authenticator, error) {
 	auth := &Authenticator{
 		config:     cfg,
+		methods:    authenticatedMethods,
 		principals: map[string][]string{},
 	}
 	if cfg.Static.File != "" {
 		token, err := os.ReadFile(cfg.Static.File)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read static token file: %w", err)
+			return nil, fmt.Errorf("read static token file: %w", err)
 		}
 		auth.token = strings.TrimSpace(string(token))
 	}
@@ -195,7 +203,7 @@ func (auth *Authenticator) AuthRPC(ctx context.Context, method string) error {
 	if auth == nil {
 		return nil
 	}
-	required, present := authenticatedMethods[method]
+	required, present := auth.methods[method]
 	if !present {
 		return status.Errorf(codes.PermissionDenied, "unregistered method %s", method)
 	}
@@ -213,7 +221,7 @@ func (auth *Authenticator) AuthRPC(ctx context.Context, method string) error {
 		return status.Errorf(code, "principal %s is not authorized", principal)
 	}
 	if !slices.Contains(permissions, required) {
-		return status.Errorf(code, "principal %s is not authorized to call %s (needs %s, has %v)", principal, method, required, permissions)
+		return status.Errorf(code, "principal %s is not authorized to call %s (needs %s, has [%s])", principal, method, required, strings.Join(permissions, ", "))
 	}
 	return nil // Allowed!
 }
@@ -267,7 +275,7 @@ func (auth *Authenticator) validateIDToken(ctx context.Context, token string) (*
 	}
 	payload, err := auth.validator.Validate(ctx, token, auth.config.Google.Audience)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate token: %w", err)
+		return nil, fmt.Errorf("validate token: %w", err)
 	}
 	auth.lruCache.Add(token, payload)
 	return payload, nil

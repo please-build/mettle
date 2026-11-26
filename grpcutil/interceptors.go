@@ -92,10 +92,7 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 			log.Fatalf("Cannot specify --auth_all without --token_file")
 		}
 		cfg := auth.Config{
-			Roles: map[string]struct {
-				Permissions []string `yaml:"permissions"`
-				Principals  []string `yaml:"principals"`
-			}{
+			Roles: map[string]auth.Role{
 				auth.LegacyRole: {
 					Permissions: []string{
 						auth.CASRead,
@@ -123,10 +120,7 @@ func loadAuth(ctx context.Context, opts Opts) *auth.Authenticator {
 		return auth.MustNewAuthenticator(ctx, &cfg)
 	} else if opts.TokenFile != "" {
 		cfg := auth.Config{
-			Roles: map[string]struct {
-				Permissions []string `yaml:"permissions"`
-				Principals  []string `yaml:"principals"`
-			}{
+			Roles: map[string]auth.Role{
 				auth.LegacyRole: {
 					Permissions: []string{
 						auth.CASRead,

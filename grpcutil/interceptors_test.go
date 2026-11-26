@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,6 +65,12 @@ var mutatingMethods = []string{
 	bsWrite,
 }
 
+// Methods requiring cas:read and cas:write respectively.
+var (
+	casReadMethods  = []string{batchReadBlobs, findMissingBlobs, getTree, bsRead}
+	casWriteMethods = []string{batchUpdateBlobs, bsQueryWriteStatus, bsWrite}
+)
+
 func allMethods() []string {
 	return append(append([]string{}, anonymousMethods...), mutatingMethods...)
 }
@@ -79,46 +86,10 @@ func withToken(token string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+token))
 }
 
-func TestLoadAuthNoFlags(t *testing.T) {
-	a := loadAuth(t.Context(), Opts{})
-	for _, ctx := range []context.Context{
-		t.Context(),
-		withToken("s3cr3t"),
-		metadata.NewIncomingContext(t.Context(), metadata.Pairs("authorization", "garbage")),
-	} {
-		for _, method := range allMethods() {
-			assert.NoError(t, a.AuthRPC(ctx, method), method)
-		}
-		assert.NoError(t, a.AuthRPC(ctx, "/some.Unknown/Method"))
-	}
-}
-
-func TestLoadAuthTokenFile(t *testing.T) {
-	a := loadAuth(t.Context(), Opts{TokenFile: writeToken(t)})
-	for _, method := range anonymousMethods {
-		assert.NoError(t, a.AuthRPC(t.Context(), method), method)
-	}
-	for _, method := range mutatingMethods {
-		assert.Error(t, a.AuthRPC(t.Context(), method), method)
-		assert.Error(t, a.AuthRPC(withToken("wrong"), method), method)
-	}
-	for _, method := range allMethods() {
-		assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), method), method)
-	}
-}
-
-func TestLoadAuthAuthAll(t *testing.T) {
-	a := loadAuth(t.Context(), Opts{TokenFile: writeToken(t), AuthAll: true})
-	for _, method := range allMethods() {
-		assert.Error(t, a.AuthRPC(t.Context(), method), method)
-		assert.Error(t, a.AuthRPC(withToken("wrong"), method), method)
-		assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), method), method)
-	}
-}
-
-func TestLoadAuthConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "auth.yaml")
+func TestLoadAuth(t *testing.T) {
+	const unknownMethod = "/some.Unknown/Method"
+	everything := append(allMethods(), unknownMethod)
+	cfg := filepath.Join(t.TempDir(), "auth.yaml")
 	require.NoError(t, os.WriteFile(cfg, []byte(`
 roles:
   reader:
@@ -134,11 +105,51 @@ roles:
       - legacy
 static:
   file: `+writeToken(t)), 0644))
-	// --auth_config takes precedence over the legacy flags.
-	a := loadAuth(t.Context(), Opts{AuthConfig: cfg, TokenFile: "/nonexistent", AuthAll: true})
-	assert.NoError(t, a.AuthRPC(t.Context(), bsRead))
-	assert.Error(t, a.AuthRPC(t.Context(), bsWrite))
-	assert.Error(t, a.AuthRPC(t.Context(), getActionResult))
-	assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), bsWrite))
-	assert.Error(t, a.AuthRPC(withToken("s3cr3t"), execute))
+
+	for name, tc := range map[string]struct {
+		opts Opts
+		// Methods each kind of caller is allowed to call; everything else must be rejected.
+		anonymous, wrongToken, rightToken []string
+	}{
+		"no flags": {
+			opts:       Opts{},
+			anonymous:  everything,
+			wrongToken: everything,
+			rightToken: everything,
+		},
+		"token file": {
+			opts:       Opts{TokenFile: writeToken(t)},
+			anonymous:  anonymousMethods,
+			rightToken: allMethods(),
+		},
+		"auth all": {
+			opts:       Opts{TokenFile: writeToken(t), AuthAll: true},
+			rightToken: allMethods(),
+		},
+		"config overrides legacy flags": {
+			opts:       Opts{AuthConfig: cfg, TokenFile: "/nonexistent", AuthAll: true},
+			anonymous:  casReadMethods,
+			rightToken: append(append([]string{}, casReadMethods...), casWriteMethods...),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := loadAuth(t.Context(), tc.opts)
+			for _, caller := range []struct {
+				ctx     context.Context
+				allowed []string
+			}{
+				{t.Context(), tc.anonymous},
+				{withToken("wrong"), tc.wrongToken},
+				{withToken("s3cr3t"), tc.rightToken},
+			} {
+				for _, method := range everything {
+					if err := a.AuthRPC(caller.ctx, method); slices.Contains(caller.allowed, method) {
+						assert.NoError(t, err, method)
+					} else {
+						assert.Error(t, err, method)
+					}
+				}
+			}
+		})
+	}
 }
