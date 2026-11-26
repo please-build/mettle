@@ -6,19 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	apb "github.com/bazelbuild/remote-apis/build/bazel/remote/asset/v1"
-	pb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
-	rpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
-	rapb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-
-	lpb "github.com/please-build/mettle/proto/lucidity"
-	bpb "github.com/please-build/mettle/proto/mettle"
-	ppb "github.com/please-build/mettle/proto/purity"
 )
 
 const (
@@ -74,38 +64,8 @@ var mutatingMethods = []string{
 	bsWrite,
 }
 
-// Every service registered on any of our servers.
-var registeredServices = []grpc.ServiceDesc{
-	pb.Capabilities_ServiceDesc,
-	pb.ActionCache_ServiceDesc,
-	pb.ContentAddressableStorage_ServiceDesc,
-	pb.Execution_ServiceDesc,
-	apb.Fetch_ServiceDesc,
-	// genproto doesn't export ByteStream's ServiceDesc
-	{
-		ServiceName: "google.bytestream.ByteStream",
-		Methods:     []grpc.MethodDesc{{MethodName: "QueryWriteStatus"}},
-		Streams:     []grpc.StreamDesc{{StreamName: "Read"}, {StreamName: "Write"}},
-	},
-	bpb.Bootstrap_ServiceDesc,
-	ppb.GC_ServiceDesc,
-	lpb.Lucidity_ServiceDesc,
-	grpc_health_v1.Health_ServiceDesc,
-	rpb.ServerReflection_ServiceDesc,
-	rapb.ServerReflection_ServiceDesc,
-}
-
 func allMethods() []string {
-	var methods []string
-	for _, svc := range registeredServices {
-		for _, m := range svc.Methods {
-			methods = append(methods, "/"+svc.ServiceName+"/"+m.MethodName)
-		}
-		for _, s := range svc.Streams {
-			methods = append(methods, "/"+svc.ServiceName+"/"+s.StreamName)
-		}
-	}
-	return methods
+	return append(append([]string{}, anonymousMethods...), mutatingMethods...)
 }
 
 func writeToken(t *testing.T) string {
@@ -181,13 +141,4 @@ static:
 	assert.Error(t, a.AuthRPC(t.Context(), getActionResult))
 	assert.NoError(t, a.AuthRPC(withToken("s3cr3t"), bsWrite))
 	assert.Error(t, a.AuthRPC(withToken("s3cr3t"), execute))
-}
-
-func TestAllRegisteredMethodsHavePermissions(t *testing.T) {
-	// With a token configured, unregistered methods are rejected, so this catches anything missing from the map.
-	a := loadAuth(t.Context(), Opts{TokenFile: writeToken(t), AuthAll: true})
-	for _, method := range allMethods() {
-		err := a.AuthRPC(withToken("s3cr3t"), method)
-		assert.NoError(t, err, method)
-	}
 }

@@ -136,11 +136,13 @@ func MustLoadConfig(filename string) *Config {
 
 // An Authenticator auths incoming RPCs.
 type Authenticator struct {
-	config     *Config
+	config *Config
+	// Map of principal -> permissions it holds
 	principals map[string][]string
-	token      string
-	validator  *idtoken.Validator
-	lruCache   *lru.Cache[string, *idtoken.Payload]
+	// The legacy static token
+	token     string
+	validator *idtoken.Validator
+	lruCache  *lru.Cache[string, *idtoken.Payload]
 }
 
 // NewAuthenticator creates an authenticator from the given config

@@ -41,7 +41,7 @@ type Opts struct {
 	TLSMinVersion string `long:"tls-min-version" choice:"1.2" choice:"1.3" default:"1.3" description:"TLS minimum version allowed on new connections"`
 	NoHealth      bool   `no-flag:"true" description:"Used internally to indicate when we don't want to automatically add a healthcheck."`
 
-	AuthConfig string `long:"auth_config" env:"AUTH_CONFIG" description:"Config file for authentication. Overrides --token_file and --auth_all if set."`
+	AuthConfig string `long:"auth_config_file" env:"AUTH_CONFIG_FILE" description:"Config file for authentication. Overrides --token_file and --auth_all if set."`
 	TokenFile  string `long:"token_file" env:"TOKEN_FILE" description:"File containing a pre-shared token that clients must provide as authentication."`
 	AuthAll    bool   `long:"auth_all" description:"Require authentication on all RPCs (by default only on RPCs that mutate state)"`
 }

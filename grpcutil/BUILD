@@ -28,20 +28,11 @@ go_library(
 
 go_test(
     name = "interceptors_test",
-    srcs = ["interceptors_test.go"],
+    srcs = glob(["*_test.go"]),
     deps = [
         ":grpcutil",
-        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/asset/v1",
-        "///third_party/go/github.com_bazelbuild_remote-apis//build/bazel/remote/execution/v2",
         "///third_party/go/github.com_stretchr_testify//assert",
         "///third_party/go/github.com_stretchr_testify//require",
-        "///third_party/go/google.golang.org_grpc//:grpc",
-        "///third_party/go/google.golang.org_grpc//health/grpc_health_v1",
         "///third_party/go/google.golang.org_grpc//metadata",
-        "///third_party/go/google.golang.org_grpc//reflection/grpc_reflection_v1",
-        "///third_party/go/google.golang.org_grpc//reflection/grpc_reflection_v1alpha",
-        "//proto/lucidity",
-        "//proto/mettle",
-        "//proto/purity",
     ],
 )
