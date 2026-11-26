@@ -203,7 +203,7 @@ const file_proto_mettle_mettle_proto_rawDesc = "" +
 	"\x17ServeExecutionsResponse\x123\n" +
 	"\x04jobs\x18\x01 \x03(\v2\x1f.build.please.remote.mettle.JobR\x04jobs2\x87\x01\n" +
 	"\tBootstrap\x12z\n" +
-	"\x0fServeExecutions\x122.build.please.remote.mettle.ServeExecutionsRequest\x1a3.build.please.remote.mettle.ServeExecutionsResponseB8Z6github.com/please-build/mettle/proto/mettleb\x06proto3"
+	"\x0fServeExecutions\x122.build.please.remote.mettle.ServeExecutionsRequest\x1a3.build.please.remote.mettle.ServeExecutionsResponseB-Z+github.com/please-build/mettle/proto/mettleb\x06proto3"
 
 var (
 	file_proto_mettle_mettle_proto_rawDescOnce sync.Once
