@@ -28,7 +28,8 @@ This project uses **Please** (https://please.build), a high-performance build sy
 ./pleasew puku lint
 
 # Format and populate BUILD files. Always use this in favour of manually editing BUILD files when
-# making changes to Go libraries, binaries, and tests
+# making changes to Go libraries, binaries, and tests. //elan/rpc here is an example; the command
+# results in elan/rpc/BUILD being updated.
 ./pleasew puku fmt //elan/rpc
 ```
 
