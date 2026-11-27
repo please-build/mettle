@@ -74,7 +74,7 @@ func ServeForever(ctx context.Context, opts grpcutil.Opts, storage string, secur
 	srv.client.HTTPClient.Timeout = 5 * time.Minute // Always put some kind of limit on
 	srv.client.RequestLogHook = srv.logHTTPRequests
 	srv.client.Logger = logger{}
-	lis, s := grpcutil.NewServer(opts)
+	lis, s := grpcutil.NewServer(ctx, opts)
 	pb.RegisterFetchServer(s, srv)
 	grpcutil.ServeForever(lis, s)
 }

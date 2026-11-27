@@ -1,6 +1,9 @@
 go_library(
     name = "grpcutil",
-    srcs = glob(["*.go"]),
+    srcs = glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ),
     visibility = ["PUBLIC"],
     deps = [
         "///third_party/go/github.com_grpc-ecosystem_go-grpc-middleware_providers_prometheus//:prometheus",
@@ -16,9 +19,20 @@ go_library(
         "///third_party/go/google.golang.org_grpc//health",
         "///third_party/go/google.golang.org_grpc//health/grpc_health_v1",
         "///third_party/go/google.golang.org_grpc//keepalive",
-        "///third_party/go/google.golang.org_grpc//metadata",
         "///third_party/go/google.golang.org_grpc//reflection",
         "///third_party/go/google.golang.org_grpc//status",
         "///third_party/go/gopkg.in_op_go-logging.v1//:go-logging.v1",
+        "//auth",
+    ],
+)
+
+go_test(
+    name = "grpcutil_test",
+    srcs = glob(["*_test.go"]),
+    deps = [
+        ":grpcutil",
+        "///third_party/go/github.com_stretchr_testify//assert",
+        "///third_party/go/github.com_stretchr_testify//require",
+        "///third_party/go/google.golang.org_grpc//metadata",
     ],
 )

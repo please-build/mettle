@@ -323,7 +323,7 @@ func checkExitCode(t *testing.T, op *longrunning.Operation, expectedExitCode int
 }
 
 func setupServers(t *testing.T) (pb.ExecutionClient, *executor, *grpc.Server) {
-	casaddr := setupCASServer()
+	casaddr := setupCASServer(t.Context())
 	requests := fmt.Sprintf("mem://requests%d", queueID)
 	responses := fmt.Sprintf("mem://responses%d", queueID)
 	queues := PubSubOpts{
@@ -353,9 +353,9 @@ func setupServers(t *testing.T) (pb.ExecutionClient, *executor, *grpc.Server) {
 	return pb.NewExecutionClient(conn), newExecutor(t.Context(), requests, responses), s
 }
 
-func setupCASServer() string {
+func setupCASServer(ctx context.Context) string {
 	srv := cas{}
-	lis, s := grpcutil.NewServer(grpcutil.Opts{
+	lis, s := grpcutil.NewServer(ctx, grpcutil.Opts{
 		Host: "127.0.0.1",
 		Port: 0,
 	})
@@ -376,7 +376,7 @@ func TestGetExecutions(t *testing.T) {
 		name: "mettle API server",
 		jobs: loadJob(),
 	}
-	lis, s := grpcutil.NewServer(opts)
+	lis, s := grpcutil.NewServer(t.Context(), opts)
 	bpb.RegisterBootstrapServer(s, srv)
 	go s.Serve(lis)
 
@@ -417,7 +417,7 @@ type routingFixture struct {
 }
 
 func setupRoutingServer(t *testing.T, allowedPlatform map[string][]string) *routingFixture {
-	casaddr := setupCASServer()
+	casaddr := setupCASServer(t.Context())
 	stdQueue := fmt.Sprintf("mem://requests-std-%d", queueID)
 	heavyQueue := fmt.Sprintf("mem://requests-heavy-%d", queueID)
 	responses := fmt.Sprintf("mem://responses-routing-%d", queueID)
@@ -916,7 +916,7 @@ func (t *recordingTopic) Close() error                           { return nil }
 // newRecordingServer returns a server whose request & pre-response topics record to the returned log.
 // The given function is called before each request is sent.
 func newRecordingServer(t *testing.T, onRequest func() error) (*server, *sentLog) {
-	client, err := rexclient.New(t.Context(), "test", setupCASServer(), false, "")
+	client, err := rexclient.New(t.Context(), "test", setupCASServer(t.Context()), false, "")
 	require.NoError(t, err)
 	l := &sentLog{}
 	s := newTestServer()

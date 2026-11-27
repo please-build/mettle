@@ -3843,11 +3843,6 @@ go_repo(
 )
 
 go_repo(
-    module = "github.com/please-build/mettle",
-    version = "v6.3.8+incompatible",
-)
-
-go_repo(
     licences = ["Apache-2.0"],
     module = "cloud.google.com/go/profiler",
     version = "v0.6.0",
@@ -3994,4 +3989,10 @@ go_repo(
     licences = ["MIT"],
     module = "github.com/yuin/gopher-lua",
     version = "v1.1.1",
+)
+
+go_repo(
+    licences = ["MPL-2.0"],
+    module = "github.com/hashicorp/golang-lru/v2",
+    version = "v2.0.7",
 )
